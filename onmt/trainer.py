@@ -410,22 +410,30 @@ class Trainer(object):
         if self.learned_prior:
             prior = (self.model.prior_x2y if side == 'x2y' else 
                      self.model.prior_y2x)
-            # obtain all cases of lprob_yz
-            lprob_y = []
-            for i in range(self.num_experts):
-                dec_in = self.get_dec_in(input_, i)
-                lprob_y_k = self._get_lprob_y(
-                    dec_in, target, enc, mem, x, xlen, side=side)
-                lprob_y.append(lprob_y_k)
-            lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
+            ### excluding logsumexp
             lprob_z = prior(mem.detach(), xlen)  # -> B x K
-            lprob_yz = lprob_y + lprob_z  # -> B x K
-            # gather lprobs of winners
-            lprob_yz_winner = lprob_yz.gather(
+            lprob_z_winner = lprob_z.gather(
                 dim=-1, index=winners.unsqueeze(-1))  # -> B
-            logsumprob_yz = torch.logsumexp(lprob_yz, dim=1)  # -> B
-            # get loss
-            loss = -(lprob_yz_winner - logsumprob_yz).sum()
+            loss_z = - lprob_z_winner.sum()
+            loss += loss_z
+            
+            # #### includling logsumexp
+            # # obtain all cases of lprob_yz
+            # lprob_y = []
+            # for i in range(self.num_experts):
+            #     dec_in = self.get_dec_in(input_, i)
+            #     lprob_y_k = self._get_lprob_y(
+            #         dec_in, target, enc, mem, x, xlen, side=side)
+            #     lprob_y.append(lprob_y_k)
+            # lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
+            # lprob_z = prior(mem.detach(), xlen)  # -> B x K
+            # lprob_yz = lprob_y + lprob_z  # -> B x K
+            # # gather lprobs of winners
+            # lprob_yz_winner = lprob_yz.gather(
+            #     dim=-1, index=winners.unsqueeze(-1))  # -> B
+            # logsumprob_yz = torch.logsumexp(lprob_yz, dim=1)  # -> B
+            # # get loss
+            # loss = -(lprob_yz_winner - logsumprob_yz).sum()
 
         return loss, stat_dict
 
