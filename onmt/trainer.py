@@ -15,6 +15,8 @@ import traceback
 import onmt.utils
 from onmt.utils.logging import logger
 
+torch.autograd.set_detect_anomaly(True)
+
 
 def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
     """
@@ -89,7 +91,9 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            earlystopper=earlystopper,
                            dropout=dropout,
                            dropout_steps=dropout_steps,
-                           source_noise=source_noise)
+                           source_noise=source_noise,
+                           num_experts=opt.num_experts,
+                           vocab=tgt_field.vocab)
     return trainer
 
 
@@ -127,7 +131,7 @@ class Trainer(object):
                  report_manager=None, with_align=False, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
-                 source_noise=None):
+                 source_noise=None, num_experts=1, dual=False, vocab=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -153,6 +157,8 @@ class Trainer(object):
         self.dropout = dropout
         self.dropout_steps = dropout_steps
         self.source_noise = source_noise
+        self.num_experts = num_experts
+        self.vocab = vocab
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -179,23 +185,27 @@ class Trainer(object):
 
     def _accum_batches(self, iterator):
         batches = []
-        normalization = 0
+        normalization_x2y = normalization_y2x = 0
         self.accum_count = self._accum_count(self.optim.training_step)
         for batch in iterator:
             batches.append(batch)
             if self.norm_method == "tokens":
-                num_tokens = batch.tgt[1:, :, 0].ne(
+                num_tokens = batch.tgt[0][1:, :, 0].ne(
                     self.train_loss.padding_idx).sum()
-                normalization += num_tokens.item()
+                normalization_x2y += num_tokens.item()
+                num_tokens = batch.src[0][1:, :, 0].ne(
+                    self.train_loss.padding_idx).sum()
+                normalization_y2x += num_tokens.item()
             else:
-                normalization += batch.batch_size
+                normalization_x2y += batch.batch_size
+                normalization_y2x += batch.batch_size
             if len(batches) == self.accum_count:
-                yield batches, normalization
+                yield batches, normalization_x2y, normalization_y2x
                 self.accum_count = self._accum_count(self.optim.training_step)
                 batches = []
-                normalization = 0
+                normalization_x2y = normalization_y2x = 0
         if batches:
-            yield batches, normalization
+            yield batches, normalization_x2y, normalization_y2x
 
     def _update_average(self, step):
         if self.moving_average is None:
@@ -238,11 +248,11 @@ class Trainer(object):
             logger.info('Start training loop and validate every %d steps...',
                         valid_steps)
 
-        total_stats = onmt.utils.Statistics()
-        report_stats = onmt.utils.Statistics()
+        total_stats = onmt.utils.Statistics(self.num_experts)
+        report_stats = onmt.utils.Statistics(self.num_experts)
         self._start_report_manager(start_time=total_stats.start_time)
 
-        for i, (batches, normalization) in enumerate(
+        for i, (batches, normalization_x2y, normalization_y2x) in enumerate(
                 self._accum_batches(train_iter)):
             step = self.optim.training_step
             # UPDATE DROPOUT
@@ -256,13 +266,16 @@ class Trainer(object):
                             % (self.gpu_rank, i + 1, len(batches)))
 
             if self.n_gpu > 1:
-                normalization = sum(onmt.utils.distributed
+                normalization_x2y = sum(onmt.utils.distributed
                                     .all_gather_list
-                                    (normalization))
+                                    (normalization_x2y))
+                normalization_y2x = sum(onmt.utils.distributed
+                                    .all_gather_list
+                                    (normalization_y2x))
 
             self._gradient_accumulation(
-                batches, normalization, total_stats,
-                report_stats)
+                batches, normalization_x2y, normalization_y2x, 
+                total_stats, report_stats)
 
             if self.average_decay > 0 and i % self.average_every == 0:
                 self._update_average(step)
@@ -312,121 +325,189 @@ class Trainer(object):
         Returns:
             :obj:`nmt.Statistics`: validation loss statistics
         """
-        valid_model = self.model
         if moving_average:
             # swap model params w/ moving average
             # (and keep the original parameters)
             model_params_data = []
             for avg, param in zip(self.moving_average,
-                                  valid_model.parameters()):
+                                  self.model.parameters()):
                 model_params_data.append(param.data)
                 param.data = avg.data.half() if self.optim._fp16 == "legacy" \
                     else avg.data
 
         # Set model in validating mode.
-        valid_model.eval()
+        self.model.eval()
 
         with torch.no_grad():
-            stats = onmt.utils.Statistics()
+            stats = onmt.utils.Statistics(self.num_experts)
 
             for batch in valid_iter:
-                src, src_lengths = batch.src if isinstance(batch.src, tuple) \
-                                   else (batch.src, None)
-                tgt = batch.tgt
+                src, src_lengths = batch.src
+                tgt, tgt_lengths = batch.tgt
 
-                # F-prop through the model.
-                outputs, attns = valid_model(src, tgt, src_lengths,
-                                             with_align=self.with_align)
+                # get rz
+                lprob_yz = self.get_lprob_yz_x(
+                    src, tgt, src_lengths, side='x2y')  # B x K
+                lprob_xz = self.get_lprob_yz_x(
+                    tgt, src, tgt_lengths, side='y2x')  # B x K
+                rz1 = torch.nn.functional.softmax(lprob_yz, dim=1)
+                rz2 = torch.nn.functional.softmax(lprob_xz, dim=1)
+                rz = torch.sqrt(rz1 * rz2)
+                winners = rz.max(dim=1)[1]
 
-                # Compute loss.
-                _, batch_stats = self.valid_loss(batch, outputs, attns)
+                # get x2y stats
+                loss_x2y, stat_dict_x2y = self.get_loss_stats(
+                    src, tgt, src_lengths, winners, side='x2y')
+                # get y2x stats
+                loss_y2x, stat_dict_y2x = self.get_loss_stats(
+                    tgt, src, tgt_lengths, winners, side='y2x')
+                
+                # batch stats
+                batch_stats_x2y = onmt.utils.Statistics(
+                    self.num_experts, loss=loss_x2y.item(),
+                    r=rz.sum(dim=0).cpu().numpy(), **stat_dict_x2y)
+                batch_stats_y2x = onmt.utils.Statistics(
+                    self.num_experts, loss=loss_y2x.item(),
+                    r=rz.sum(dim=0).cpu().numpy(), **stat_dict_y2x)
 
                 # Update statistics.
-                stats.update(batch_stats)
+                stats.update(batch_stats_x2y)
+                stats.update(batch_stats_y2x)
+
         if moving_average:
             for param_data, param in zip(model_params_data,
                                          self.model.parameters()):
                 param.data = param_data
 
         # Set model back to training mode.
-        valid_model.train()
+        self.model.train()
 
         return stats
+    
+    def expert_index(self, i):
+        return i + self.vocab.stoi['<expert_0>']
 
-    def _gradient_accumulation(self, true_batches, normalization, total_stats,
-                               report_stats):
+    def get_loss_stats(self, x, y, xlen, winners, side='x2y'):
+        """get log p(y,z|x) tensor
+            whether z is known or unknown"""
+
+        enc, mem, _ = self.model.encoder(x, xlen)
+        dec_in, target = y[:-1], y[1:]
+        dec_in[0, :, 0] = self.expert_index(winners)
+        loss, stat_dict = self._get_loss_y(
+            dec_in, target, enc, mem, x, xlen, side=side, 
+            reduced_sum=True)
+        return loss, stat_dict
+
+    def _get_loss_y(self, dec_in, target, enc_state, memory_bank, 
+                   x, lengths, side='x2y', reduced_sum=False):
+        """log p(y|x,z) when z is specified in `dec_in`"""
+        decoder = (self.model.decoder_x2y if side == 'x2y' else 
+                    self.model.decoder_y2x)
+
+        decoder.init_state(x, enc_state, memory_bank)
+        dec_out, _ = decoder(dec_in, memory_bank, 
+                             memory_lengths=lengths, 
+                             with_align=self.with_align)
+
+        loss, num_correct, n_words = self.train_loss.compute_loss(
+            dec_out, target, reduced_sum=reduced_sum, get_stat=True)
+        stat_dict = {
+            'loss_%s' %side: loss.sum().item(),
+            'n_correct_%s' %side: num_correct,
+            'n_words_%s' %side: n_words}
+        return loss, stat_dict
+
+    def get_lprob_y(self, dec_in, target, enc_state, memory_bank, 
+                    x, lengths, side='x2y'):
+        B = len(lengths)
+        loss, stat_dict = self._get_loss_y(
+            dec_in, target, enc_state, memory_bank, x, lengths, side=side)
+        loss = loss.view(B, -1)
+        lprob = -loss.sum(dim=1, keepdim=True)  # -> B x 1
+        return lprob
+
+    def get_lprob_yz_x(self, x, y, xlen, winners=None, 
+                       side='x2y', only_y=False):
+        """get log p(y,z|x) tensor
+            whether z is known or unknown"""
+        enc, mem, _ = self.model.encoder(x, xlen)
+        dec_in, target = y[:-1], y[1:]
+        if winners is None:
+            lprob_y = []
+            for i in range(self.num_experts):
+                dec_in[0, :, 0] = self.expert_index(i)
+                lprob_y_k = self.get_lprob_y(
+                    dec_in, target, enc, mem, x, xlen, side=side)
+                lprob_y.append(lprob_y_k)
+            lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
+        else:
+            dec_in[0, :, 0] = self.expert_index(winners)
+            lprob_y = self.get_lprob_y(
+                dec_in, target, enc, mem, x, xlen, side=side)  # -> B
+        return lprob_y # lprob_yz == lprob_y since we use uniform prior
+
+    def _gradient_accumulation(self, true_batches, normalization_x2y, 
+                               normalization_y2x, total_stats, report_stats):
         if self.accum_count > 1:
             self.optim.zero_grad()
 
         for k, batch in enumerate(true_batches):
-            target_size = batch.tgt.size(0)
-            # Truncated BPTT: reminder not compatible with accum > 1
-            if self.trunc_size:
-                trunc_size = self.trunc_size
-            else:
-                trunc_size = target_size
 
             batch = self.maybe_noise_source(batch)
 
-            src, src_lengths = batch.src if isinstance(batch.src, tuple) \
-                else (batch.src, None)
-            if src_lengths is not None:
-                report_stats.n_src_words += src_lengths.sum().item()
+            # 1. Load data.
+            src, src_lengths = batch.src
+            tgt, tgt_lengths = batch.tgt
+            report_stats.n_src_words += src_lengths.sum().item()
+            report_stats.n_tgt_words += tgt_lengths.sum().item()
 
-            tgt_outer = batch.tgt
+            # 2. F-prop all but generator.
+            if self.accum_count == 1:
+                self.optim.zero_grad()
+            
+            # compute responsibilities r = p(z|x,y)
+            self.model.eval()
+            with torch.no_grad():
+                # we assume uniform prior. p(y,z|x) ~ p(y|x,z)
+                lprob_yz = self.get_lprob_yz_x(
+                    src, tgt, src_lengths, side='x2y')  # B x K
+                lprob_xz = self.get_lprob_yz_x(
+                    tgt, src, tgt_lengths, side='y2x')  # B x K
+                rz1 = torch.nn.functional.softmax(lprob_yz, dim=1)
+                rz2 = torch.nn.functional.softmax(lprob_xz, dim=1)
+                rz = torch.sqrt(rz1 * rz2) # posterior!
+            self.model.train()
+                    
+            assert not rz.requires_grad
 
-            bptt = False
-            for j in range(0, target_size-1, trunc_size):
-                # 1. Create truncated target.
-                tgt = tgt_outer[j: j + trunc_size]
+            # compute loss
+            winners = rz.max(dim=1)[1]
+            # loss: -log p(y|x,z) p(z|x) p(x|y,z)
+            loss_x2y, stat_dict_x2y = self.get_loss_stats(
+                src, tgt, src_lengths, winners, side='x2y')
+            loss_y2x, stat_dict_y2x = self.get_loss_stats(
+                tgt, src, tgt_lengths, winners, side='y2x')
+            loss = loss_x2y + loss_y2x
+            
+            self.optim.backward(loss)
+            stats = onmt.utils.Statistics(self.num_experts, 
+                                          loss=loss.item(),
+                                          r=rz.sum(dim=0).cpu().numpy(),
+                                          **stat_dict_x2y, **stat_dict_y2x)
+            total_stats.update(stats)
+            report_stats.update(stats)
 
-                # 2. F-prop all but generator.
-                if self.accum_count == 1:
-                    self.optim.zero_grad()
-
-                outputs, attns = self.model(src, tgt, src_lengths, bptt=bptt,
-                                            with_align=self.with_align)
-                bptt = True
-
-                # 3. Compute loss.
-                try:
-                    loss, batch_stats = self.train_loss(
-                        batch,
-                        outputs,
-                        attns,
-                        normalization=normalization,
-                        shard_size=self.shard_size,
-                        trunc_start=j,
-                        trunc_size=trunc_size)
-
-                    if loss is not None:
-                        self.optim.backward(loss)
-
-                    total_stats.update(batch_stats)
-                    report_stats.update(batch_stats)
-
-                except Exception:
-                    traceback.print_exc()
-                    logger.info("At step %d, we removed a batch - accum %d",
-                                self.optim.training_step, k)
-
-                # 4. Update the parameters and statistics.
-                if self.accum_count == 1:
-                    # Multi GPU gradient gather
-                    if self.n_gpu > 1:
-                        grads = [p.grad.data for p in self.model.parameters()
-                                 if p.requires_grad
-                                 and p.grad is not None]
-                        onmt.utils.distributed.all_reduce_and_rescale_tensors(
-                            grads, float(1))
-                    self.optim.step()
-
-                # If truncated, don't backprop fully.
-                # TO CHECK
-                # if dec_state is not None:
-                #    dec_state.detach()
-                if self.model.decoder.state is not None:
-                    self.model.decoder.detach_state()
+            # 4. Update the parameters and statistics.
+            if self.accum_count == 1:
+                # Multi GPU gradient gather
+                if self.n_gpu > 1:
+                    grads = [p.grad.data for p in self.model.parameters()
+                                if p.requires_grad
+                                and p.grad is not None]
+                    onmt.utils.distributed.all_reduce_and_rescale_tensors(
+                        grads, float(1))
+                self.optim.step()
 
         # in case of multi step gradient accumulation,
         # update only after accum batches
@@ -490,3 +571,22 @@ class Trainer(object):
         if self.source_noise is not None:
             return self.source_noise(batch)
         return batch
+
+
+class LogSumExpMoE(torch.autograd.Function):
+    """Standard LogSumExp forward pass, but use *posterior* for the backward.
+    See `"Mixture Models for Diverse Machine Translation: Tricks of the Trade"
+    (Shen et al., 2019) <https://arxiv.org/abs/1902.07816>`_.
+    """
+
+    @staticmethod
+    def forward(ctx, logp, posterior, dim=-1):
+        ctx.save_for_backward(posterior)
+        ctx.dim = dim
+        return torch.logsumexp(logp, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        posterior, = ctx.saved_tensors
+        grad_logp = grad_output.unsqueeze(ctx.dim) * posterior
+        return grad_logp, None, None

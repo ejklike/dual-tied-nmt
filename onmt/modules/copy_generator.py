@@ -250,7 +250,8 @@ class CopyGeneratorLossCompute(NMTLossCompute):
         # this part looks like it belongs in CopyGeneratorLoss
         if self.normalize_by_length:
             # Compute Loss as NLL divided by seq length
-            tgt_lens = batch.tgt[:, :, 0].ne(self.padding_idx).sum(0).float()
+            # tgt_lens = batch.tgt[0][:, :, 0].ne(self.padding_idx).sum(0).float()
+            tgt_lens = batch.tgt[1]
             # Compute Total Loss per sequence in batch
             loss = loss.view(-1, batch.batch_size).sum(0)
             # Divide by length of each sequence and sum

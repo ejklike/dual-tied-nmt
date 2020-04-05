@@ -81,7 +81,7 @@ class TranslationBuilder(object):
             src = batch.src[0][:, :, 0].index_select(1, perm)
         else:
             src = None
-        tgt = batch.tgt[:, :, 0].index_select(1, perm) \
+        tgt = batch.tgt[0][:, :, 0].index_select(1, perm) \
             if self.has_tgt else None
 
         translations = []

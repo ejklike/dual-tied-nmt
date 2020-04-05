@@ -72,6 +72,15 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
     # patch for fields that may be missing in old data/model
     patch_fields(opt, fields)
 
+    # add indicator tokens for each expert
+    for i in range(opt.num_experts):
+        # add to both dictionaries in case we're sharing embeddings
+        # assume shared vocab
+        fields['src'].base_field.vocab.itos.append('<expert_{}>'.format(i))
+        fields['src'].base_field.vocab.stoi.update(
+            {tok: i for i, tok in enumerate(
+                fields['src'].base_field.vocab.itos)})
+
     # Report src and tgt vocab sizes, including for features
     for side in ['src', 'tgt']:
         f = fields[side]

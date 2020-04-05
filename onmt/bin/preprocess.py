@@ -54,7 +54,7 @@ def process_one_shard(corpus_params, params):
     assert len(src_shard) == len(tgt_shard)
     logger.info("Building shard %d." % i)
 
-    src_data = {"reader": src_reader, "data": src_shard, "dir": opt.src_dir}
+    src_data = {"reader": src_reader, "data": src_shard, "dir": None}
     tgt_data = {"reader": tgt_reader, "data": tgt_shard, "dir": None}
     align_data = {"reader": align_reader, "data": align_shard, "dir": None}
     _readers, _data, _dir = inputters.Dataset.config(

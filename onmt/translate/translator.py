@@ -4,6 +4,7 @@ from __future__ import print_function
 import codecs
 import os
 import time
+from tqdm import tqdm
 import numpy as np
 from itertools import count, zip_longest
 
@@ -19,9 +20,11 @@ from onmt.utils.alignment import extract_alignment, build_align_pharaoh
 from onmt.modules.copy_generator import collapse_copy_scores
 
 
-def build_translator(opt, report_score=True, logger=None, out_file=None):
-    if out_file is None:
-        out_file = codecs.open(opt.output, 'w+', 'utf-8')
+def build_translator(opt, report_score=True, logger=None, out_file=None, 
+                     log_score=False):
+    out_file = None
+    # if out_file is None:
+    #     out_file = codecs.open(opt.output, 'w+', 'utf-8')
 
     load_test_model = onmt.decoders.ensemble.load_test_model \
         if len(opt.models) > 1 else onmt.model_builder.load_test_model
@@ -38,7 +41,8 @@ def build_translator(opt, report_score=True, logger=None, out_file=None):
         out_file=out_file,
         report_align=opt.report_align,
         report_score=report_score,
-        logger=logger
+        logger=logger,
+        log_score=log_score
     )
     return translator
 
@@ -130,7 +134,11 @@ class Translator(object):
             report_align=False,
             report_score=True,
             logger=None,
+            log_score=False,
             seed=-1):
+        self.expert_id = None
+        self.log_score = log_score
+
         self.model = model
         self.fields = fields
         tgt_field = dict(self.fields)["tgt"].base_field
@@ -164,7 +172,9 @@ class Translator(object):
         self.src_reader = src_reader
         self.tgt_reader = tgt_reader
         self.replace_unk = replace_unk
-        if self.replace_unk and not self.model.decoder.attentional:
+        if (self.replace_unk and 
+            not self.model.decoder_x2y.attentional 
+            and not self.model.decoder_y2x.attentional):
             raise ValueError(
                 "replace_unk requires an attentional decoder.")
         self.phrase_table = phrase_table
@@ -210,7 +220,8 @@ class Translator(object):
             out_file=None,
             report_align=False,
             report_score=True,
-            logger=None):
+            logger=None,
+            log_score=False):
         """Alternate constructor.
 
         Args:
@@ -259,7 +270,8 @@ class Translator(object):
             report_align=report_align,
             report_score=report_score,
             logger=logger,
-            seed=opt.seed)
+            seed=opt.seed,
+            log_score=log_score)
 
     def _log(self, msg):
         if self.logger:
@@ -268,11 +280,11 @@ class Translator(object):
             print(msg)
 
     def _gold_score(self, batch, memory_bank, src_lengths, src_vocabs,
-                    use_src_map, enc_states, batch_size, src):
+                    use_src_map, enc_states, batch_size, src, initial_token):
         if "tgt" in batch.__dict__:
             gs = self._score_target(
                 batch, memory_bank, src_lengths, src_vocabs,
-                batch.src_map if use_src_map else None)
+                batch.src_map if use_src_map else None, initial_token)
             self.model.decoder.init_state(src, memory_bank, enc_states)
         else:
             gs = [0] * batch_size
@@ -280,6 +292,7 @@ class Translator(object):
 
     def translate(
             self,
+            direction,
             src,
             tgt=None,
             src_dir=None,
@@ -306,11 +319,14 @@ class Translator(object):
             * all_predictions is a list of `batch_size` lists
                 of `n_best` predictions
         """
+        assert direction in ['x2y', 'y2x']
+        self.model.decoder = (self.model.decoder_x2y if direction == 'x2y' 
+                              else self.model.decoder_y2x)
 
         if batch_size is None:
             raise ValueError("batch_size must be set")
 
-        src_data = {"reader": self.src_reader, "data": src, "dir": src_dir}
+        src_data = {"reader": self.src_reader, "data": src, "dir": None}
         tgt_data = {"reader": self.tgt_reader, "data": tgt, "dir": None}
         _readers, _data, _dir = inputters.Dataset.config(
             [('src', src_data), ('tgt', tgt_data)])
@@ -350,18 +366,20 @@ class Translator(object):
 
         start_time = time.time()
 
-        for batch in data_iter:
+        for batch in tqdm(data_iter):
             batch_data = self.translate_batch(
                 batch, data.src_vocabs, attn_debug
             )
             translations = xlation_builder.from_batch(batch_data)
 
             for trans in translations:
-                all_scores += [trans.pred_scores[:self.n_best]]
+                n_best_scores = trans.pred_scores[:self.n_best]
+                all_scores += [n_best_scores]
                 pred_score_total += trans.pred_scores[0]
                 pred_words_total += len(trans.pred_sents[0])
                 if tgt is not None:
-                    gold_score_total += trans.gold_score
+                    n_best_gold_scores = trans.gold_score
+                    gold_score_total += n_best_gold_scores
                     gold_words_total += len(trans.gold_sent) + 1
 
                 n_best_preds = [" ".join(pred)
@@ -375,8 +393,19 @@ class Translator(object):
                                     for pred, align in zip(
                                         n_best_preds, n_best_preds_align)]
                 all_predictions += [n_best_preds]
-                self.out_file.write('\n'.join(n_best_preds) + '\n')
-                self.out_file.flush()
+                if self.log_score:
+                    # in BWD translation(tgt=product, n_best==1),
+                    # we use gold score
+                    if self.n_best == 1 and tgt is not None:
+                        n_best_scores = [n_best_gold_scores]
+                    n_best_preds_scores = [
+                        pred + ',' + str(score.item()) for pred, score in 
+                        zip(n_best_preds, n_best_scores)]
+                    self.out_file.write('\n'.join(n_best_preds_scores) + '\n')
+                    self.out_file.flush()
+                else:
+                    self.out_file.write('\n'.join(n_best_preds) + '\n')
+                    self.out_file.flush()
 
                 if self.verbose:
                     sent_number = next(counter)
@@ -475,7 +504,7 @@ class Translator(object):
         """
         # (0) add BOS and padding to tgt prediction
         if hasattr(batch, 'tgt'):
-            batch_tgt_idxs = batch.tgt.transpose(1, 2).transpose(0, 2)
+            batch_tgt_idxs = batch.tgt[0].transpose(1, 2).transpose(0, 2)
         else:
             batch_tgt_idxs = self._align_pad_prediction(
                 predictions, bos=self._tgt_bos_idx, pad=self._tgt_pad_idx)
@@ -620,7 +649,11 @@ class Translator(object):
             log_probs = scores.squeeze(0).log()
             # returns [(batch_size x beam_size) , vocab ] when 1 step
             # or [ tgt_len, batch_size, vocab ] when full sentence
+
         return log_probs, attn
+
+    def expert_index(self, i):
+        return i + self._tgt_vocab.stoi['<expert_0>']
 
     def _translate_batch_with_strategy(
             self,
@@ -643,6 +676,8 @@ class Translator(object):
         parallel_paths = decode_strategy.parallel_paths  # beam_size
         batch_size = batch.batch_size
 
+        initial_token = self.expert_index(self.expert_id)
+
         # (1) Run the encoder on the src.
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
@@ -654,12 +689,13 @@ class Translator(object):
             "batch": batch,
             "gold_score": self._gold_score(
                 batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src)}
+                enc_states, batch_size, src, initial_token)}
 
         # (2) prep decode_strategy. Possibly repeat src objects.
         src_map = batch.src_map if use_src_map else None
         fn_map_state, memory_bank, memory_lengths, src_map = \
-            decode_strategy.initialize(memory_bank, src_lengths, src_map)
+            decode_strategy.initialize(memory_bank, src_lengths, src_map,
+                                       initial_token=initial_token)
         if fn_map_state is not None:
             self.model.decoder.map_state(fn_map_state)
 
@@ -714,9 +750,10 @@ class Translator(object):
         return results
 
     def _score_target(self, batch, memory_bank, src_lengths,
-                      src_vocabs, src_map):
-        tgt = batch.tgt
+                      src_vocabs, src_map, initial_token):
+        tgt = batch.tgt[0]
         tgt_in = tgt[:-1]
+        tgt_in[0, :, 0] = initial_token
 
         log_probs, attn = self._decode_and_generate(
             tgt_in, memory_bank, batch, src_vocabs,

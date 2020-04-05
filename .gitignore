@@ -1,3 +1,6 @@
+.vscode/
+onmt-runs/
+
 # repo-specific stuff
 pred.txt
 multi-bleu.perl

@@ -20,8 +20,8 @@ def build_report_manager(opt, gpu_rank):
     else:
         writer = None
 
-    report_mgr = ReportMgr(opt.report_every, start_time=-1,
-                           tensorboard_writer=writer)
+    report_mgr = ReportMgr(opt.report_every, num_experts=opt.num_experts, 
+                           start_time=-1, tensorboard_writer=writer)
     return report_mgr
 
 
@@ -33,7 +33,7 @@ class ReportMgrBase(object):
         * `_report_step`
     """
 
-    def __init__(self, report_every, start_time=-1.):
+    def __init__(self, report_every, num_experts=1, start_time=-1.):
         """
         Args:
             report_every(int): Report status every this many sentences
@@ -42,6 +42,7 @@ class ReportMgrBase(object):
         """
         self.report_every = report_every
         self.start_time = start_time
+        self.num_experts = num_experts
 
     def start(self):
         self.start_time = time.time()
@@ -73,7 +74,7 @@ class ReportMgrBase(object):
                     onmt.utils.Statistics.all_gather_stats(report_stats)
             self._report_training(
                 step, num_steps, learning_rate, report_stats)
-            return onmt.utils.Statistics()
+            return onmt.utils.Statistics(self.num_experts)
         else:
             return report_stats
 
@@ -98,7 +99,8 @@ class ReportMgrBase(object):
 
 
 class ReportMgr(ReportMgrBase):
-    def __init__(self, report_every, start_time=-1., tensorboard_writer=None):
+    def __init__(self, report_every, num_experts=1, start_time=-1., 
+                 tensorboard_writer=None):
         """
         A report manager that writes statistics on standard output as well as
         (optionally) TensorBoard
@@ -108,7 +110,7 @@ class ReportMgr(ReportMgrBase):
             tensorboard_writer(:obj:`tensorboard.SummaryWriter`):
                 The TensorBoard Summary writer to use or None
         """
-        super(ReportMgr, self).__init__(report_every, start_time)
+        super(ReportMgr, self).__init__(report_every, num_experts, start_time)
         self.tensorboard_writer = tensorboard_writer
 
     def maybe_log_tensorboard(self, stats, prefix, learning_rate, step):
@@ -128,7 +130,7 @@ class ReportMgr(ReportMgrBase):
                                    "progress",
                                    learning_rate,
                                    step)
-        report_stats = onmt.utils.Statistics()
+        report_stats = onmt.utils.Statistics(self.num_experts)
 
         return report_stats
 
@@ -146,8 +148,13 @@ class ReportMgr(ReportMgrBase):
                                        step)
 
         if valid_stats is not None:
-            self.log('Validation perplexity: %g' % valid_stats.ppl())
-            self.log('Validation accuracy: %g' % valid_stats.accuracy())
+            self.log('Validation perplexity: %g; %g' 
+                     % (valid_stats.ppl('x2y'), 
+                        valid_stats.ppl('y2x')))
+            self.log('Validation accuracy: %g,; %g' 
+                     % (valid_stats.accuracy('x2y'), 
+                        valid_stats.accuracy('y2x')))
+            self.log('Validation posterior: %s' % valid_stats.posterior_str())
 
             self.maybe_log_tensorboard(valid_stats,
                                        "valid",

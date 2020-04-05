@@ -160,7 +160,34 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
 
         tgt_emb.word_lut.weight = src_emb.word_lut.weight
 
-    decoder = build_decoder(model_opt, tgt_emb)
+    decoder_x2y = build_decoder(model_opt, tgt_emb)
+    decoder_y2x = build_decoder(model_opt, src_emb)
+
+    if model_opt.tied:
+        for enc, dec1, dec2 in zip(encoder.transformer, 
+                                   decoder_x2y.transformer_layers, 
+                                   decoder_y2x.transformer_layers):
+            dec1.self_attn.linear_keys.weight = \
+                enc.self_attn.linear_keys.weight
+            dec1.self_attn.linear_values.weight = \
+                enc.self_attn.linear_values.weight
+            dec1.self_attn.linear_query.weight = \
+                enc.self_attn.linear_query.weight
+            dec1.self_attn.final_linear.weight = \
+                enc.self_attn.final_linear.weight
+            dec1.feed_forward.w_1.weight = enc.feed_forward.w_1.weight
+            dec1.feed_forward.w_2.weight = enc.feed_forward.w_2.weight
+
+            dec2.self_attn.linear_keys.weight = \
+                enc.self_attn.linear_keys.weight
+            dec2.self_attn.linear_values.weight = \
+                enc.self_attn.linear_values.weight
+            dec2.self_attn.linear_query.weight = \
+                enc.self_attn.linear_query.weight
+            dec2.self_attn.final_linear.weight = \
+                enc.self_attn.final_linear.weight
+            dec2.feed_forward.w_1.weight = enc.feed_forward.w_1.weight
+            dec2.feed_forward.w_2.weight = enc.feed_forward.w_2.weight
 
     # Build NMTModel(= encoder + decoder).
     if gpu and gpu_id is not None:
@@ -169,7 +196,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         device = torch.device("cuda")
     elif not gpu:
         device = torch.device("cpu")
-    model = onmt.models.NMTModel(encoder, decoder)
+    model = onmt.models.NMTModel(encoder, decoder_x2y, decoder_y2x)
 
     # Build Generator.
     if not model_opt.copy_attn:
@@ -226,8 +253,11 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         if hasattr(model.encoder, 'embeddings'):
             model.encoder.embeddings.load_pretrained_vectors(
                 model_opt.pre_word_vecs_enc)
-        if hasattr(model.decoder, 'embeddings'):
-            model.decoder.embeddings.load_pretrained_vectors(
+        if hasattr(model.decoder_x2y, 'embeddings'):
+            model.decoder_x2y.embeddings.load_pretrained_vectors(
+                model_opt.pre_word_vecs_dec)
+        if hasattr(model.decoder_y2x, 'embeddings'):
+            model.decoder_y2x.embeddings.load_pretrained_vectors(
                 model_opt.pre_word_vecs_dec)
 
     model.generator = generator
@@ -240,5 +270,5 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
 def build_model(model_opt, opt, fields, checkpoint):
     logger.info('Building model...')
     model = build_base_model(model_opt, fields, use_gpu(opt), checkpoint)
-    logger.info(model)
+    # logger.info(model)
     return model

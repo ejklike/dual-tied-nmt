@@ -12,12 +12,13 @@ class NMTModel(nn.Module):
       decoder (onmt.decoders.DecoderBase): a decoder object
     """
 
-    def __init__(self, encoder, decoder):
+    def __init__(self, encoder, decoder_x2y, decoder_y2x):
         super(NMTModel, self).__init__()
         self.encoder = encoder
-        self.decoder = decoder
+        self.decoder_x2y = decoder_x2y
+        self.decoder_y2x = decoder_y2x
 
-    def forward(self, src, tgt, lengths, bptt=False, with_align=False):
+    def forward(self, src, tgt, lengths, with_align=False, side='x2y'):
         """Forward propagate a `src` and `tgt` pair for training.
         Possible initialized with a beginning decoder state.
 
@@ -44,13 +45,15 @@ class NMTModel(nn.Module):
 
         enc_state, memory_bank, lengths = self.encoder(src, lengths)
 
-        if bptt is False:
-            self.decoder.init_state(src, memory_bank, enc_state)
-        dec_out, attns = self.decoder(dec_in, memory_bank,
-                                      memory_lengths=lengths,
-                                      with_align=with_align)
+        decoder = self.decoder_x2y if side == 'x2y' else self.decoder_y2x
+        
+        decoder.init_state(src, memory_bank, enc_state)
+        dec_out, attns = decoder(dec_in, memory_bank,
+                                 memory_lengths=lengths,
+                                 with_align=with_align)
         return dec_out, attns
 
     def update_dropout(self, dropout):
         self.encoder.update_dropout(dropout)
-        self.decoder.update_dropout(dropout)
+        self.decoder_x2y.update_dropout(dropout)
+        self.decoder_y2x.update_dropout(dropout)

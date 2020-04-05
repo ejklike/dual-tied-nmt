@@ -3,6 +3,7 @@ from __future__ import division
 import time
 import math
 import sys
+import numpy as np
 
 from onmt.utils.logging import logger
 
@@ -17,11 +18,23 @@ class Statistics(object):
     * elapsed time
     """
 
-    def __init__(self, loss=0, n_words=0, n_correct=0):
+    def __init__(self, num_experts, loss=0, r=None,
+                 loss_x2y=0, loss_y2x=0, loss_moe=0,
+                 n_words_x2y=0, n_words_y2x=0, 
+                 n_correct_x2y=0, n_correct_y2x=0):
+        self.num_experts = num_experts
+        self.r = np.zeros(num_experts) if r is None else r
         self.loss = loss
-        self.n_words = n_words
-        self.n_correct = n_correct
+
+        self.loss_x2y = loss_x2y
+        self.loss_y2x = loss_y2x
+        self.loss_moe = loss_moe
+        self.n_words_x2y = n_words_x2y
+        self.n_words_y2x = n_words_y2x
+        self.n_correct_x2y = n_correct_x2y
+        self.n_correct_y2x = n_correct_y2x
         self.n_src_words = 0
+        self.n_tgt_words = 0
         self.start_time = time.time()
 
     @staticmethod
@@ -78,24 +91,52 @@ class Statistics(object):
                 or not
 
         """
+        assert self.num_experts == stat.num_experts, (self.num_experts,  stat.num_experts)
         self.loss += stat.loss
-        self.n_words += stat.n_words
-        self.n_correct += stat.n_correct
+        self.r += stat.r
+
+        self.loss_x2y += stat.loss_x2y
+        self.loss_y2x += stat.loss_y2x
+        self.loss_moe += stat.loss_moe
+        self.n_words_x2y += stat.n_words_x2y
+        self.n_words_y2x += stat.n_words_y2x
+        self.n_correct_x2y += stat.n_correct_x2y
+        self.n_correct_y2x += stat.n_correct_y2x
 
         if update_n_src_words:
             self.n_src_words += stat.n_src_words
+            self.n_tgt_words += stat.n_tgt_words
 
-    def accuracy(self):
+    def posterior_str(self):
+        r_norm = self.r / self.r.sum()
+        return '(' + ', '.join(['%.1f' % r for r in r_norm]) + ')'
+        
+    def accuracy(self, side):
         """ compute accuracy """
-        return 100 * (self.n_correct / self.n_words)
+        if side == 'x2y':
+            return (100 * (self.n_correct_x2y / self.n_words_x2y)
+                    if self.n_words_x2y > 0 else 0)
+        else:
+            return (100 * (self.n_correct_y2x / self.n_words_y2x)
+                    if self.n_words_y2x > 0 else 0)
 
-    def xent(self):
+    def xent(self, side):
         """ compute cross entropy """
-        return self.loss / self.n_words
+        if side == 'x2y':
+            return (self.loss_x2y / self.n_words_x2y 
+                    if self.n_words_x2y > 0 else 0)
+        else:
+            return (self.loss_y2x / self.n_words_y2x
+                    if self.n_words_y2x > 0 else 0)
 
-    def ppl(self):
+    def ppl(self, side):
         """ compute perplexity """
-        return math.exp(min(self.loss / self.n_words, 100))
+        if side == 'x2y':
+            return (math.exp(min(self.loss_x2y / self.n_words_x2y, 100))
+                    if self.n_words_x2y > 0 else 0)
+        else:
+            return (math.exp(min(self.loss_y2x / self.n_words_y2x, 100))
+                    if self.n_words_y2x > 0 else 0)
 
     def elapsed_time(self):
         """ compute elapsed time """
@@ -114,16 +155,19 @@ class Statistics(object):
         if num_steps > 0:
             step_fmt = "%s/%5d" % (step_fmt, num_steps)
         logger.info(
-            ("Step %s; acc: %6.2f; ppl: %5.2f; xent: %4.2f; " +
-             "lr: %7.5f; %3.0f/%3.0f tok/s; %6.0f sec")
-            % (step_fmt,
-               self.accuracy(),
-               self.ppl(),
-               self.xent(),
-               learning_rate,
-               self.n_src_words / (t + 1e-5),
-               self.n_words / (t + 1e-5),
+            "Step %s; lr: %7.5f; posterior: %s; %6.0f sec;"
+            % (step_fmt, learning_rate, self.posterior_str(), 
                time.time() - start))
+        logger.info(
+            "[FWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f/%3.0f tok/s"
+            % (self.accuracy('x2y'), self.ppl('x2y'), self.xent('x2y'),
+               (self.n_src_words) / (t + 1e-5),
+               (self.n_words_x2y) / (t + 1e-5)))
+        logger.info(
+            "[BWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f/%3.0f tok/s"
+            % (self.accuracy('y2x'), self.ppl('y2x'), self.xent('y2x'),
+               (self.n_tgt_words) / (t + 1e-5),
+               (self.n_words_y2x) / (t + 1e-5)))
         sys.stdout.flush()
 
     def log_tensorboard(self, prefix, writer, learning_rate, step):

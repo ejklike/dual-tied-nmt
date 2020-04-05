@@ -42,7 +42,7 @@ def build_loss_compute(model, tgt_field, opt, train=True):
     elif isinstance(model.generator[-1], LogSparsemax):
         criterion = SparsemaxLoss(ignore_index=padding_idx, reduction='sum')
     else:
-        criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='sum')
+        criterion = nn.NLLLoss(ignore_index=padding_idx, reduction='none')
 
     # if the loss function operates on vectors of raw logits instead of
     # probabilities, only the first part of the generator needs to be
@@ -58,7 +58,7 @@ def build_loss_compute(model, tgt_field, opt, train=True):
     else:
         compute = NMTLossCompute(
             criterion, loss_gen, lambda_coverage=opt.lambda_coverage,
-            lambda_align=opt.lambda_align)
+            lambda_align=opt.lambda_align, num_experts=opt.num_experts)
     compute.to(device)
 
     return compute
@@ -92,7 +92,7 @@ class LossComputeBase(nn.Module):
     def padding_idx(self):
         return self.criterion.ignore_index
 
-    def _make_shard_state(self, batch, output, range_, attns=None):
+    def _make_shard_state(self, batch, output, attns=None):
         """
         Make shard state dictionary for shards() to return iterable
         shards for efficient loss computation. Subclass must define
@@ -106,7 +106,7 @@ class LossComputeBase(nn.Module):
         """
         return NotImplementedError
 
-    def _compute_loss(self, batch, output, target, **kwargs):
+    def _compute_loss(self, output, target, **kwargs):
         """
         Compute the loss. Subclass must define this method.
 
@@ -125,8 +125,7 @@ class LossComputeBase(nn.Module):
                  attns,
                  normalization=1.0,
                  shard_size=0,
-                 trunc_start=0,
-                 trunc_size=None):
+                 side='x2y'):
         """Compute the forward loss, possibly in shards in which case this
         method also runs the backward pass and returns ``None`` as the loss
         value.
@@ -154,21 +153,18 @@ class LossComputeBase(nn.Module):
         Returns:
             A tuple with the loss and a :obj:`onmt.utils.Statistics` instance.
         """
-        if trunc_size is None:
-            trunc_size = batch.tgt.size(0) - trunc_start
-        trunc_range = (trunc_start, trunc_start + trunc_size)
-        shard_state = self._make_shard_state(batch, output, trunc_range, attns)
+        shard_state = self._make_shard_state(batch, output, attns, side=side)
         if shard_size == 0:
-            loss, stats = self._compute_loss(batch, **shard_state)
+            loss, stats = self._compute_loss(side=side, **shard_state)
             return loss / float(normalization), stats
-        batch_stats = onmt.utils.Statistics()
+        batch_stats = onmt.utils.Statistics(self.num_experts)
         for shard in shards(shard_state, shard_size):
-            loss, stats = self._compute_loss(batch, **shard)
+            loss, stats = self._compute_loss(side=side, **shard)
             loss.div(float(normalization)).backward()
             batch_stats.update(stats)
         return None, batch_stats
 
-    def _stats(self, loss, scores, target):
+    def _stats(self, loss, num_correct, n_words, side='x2y'):
         """
         Args:
             loss (:obj:`FloatTensor`): the loss computed by the loss criterion.
@@ -178,11 +174,12 @@ class LossComputeBase(nn.Module):
         Returns:
             :obj:`onmt.utils.Statistics` : statistics for this batch.
         """
-        pred = scores.max(1)[1]
-        non_padding = target.ne(self.padding_idx)
-        num_correct = pred.eq(target).masked_select(non_padding).sum().item()
-        num_non_padding = non_padding.sum().item()
-        return onmt.utils.Statistics(loss.item(), num_non_padding, num_correct)
+        stat_dict = {
+            'loss_%s' % side: loss.item(),
+            'n_words_%s' % side: n_words,
+            'n_correct_%s' % side: num_correct
+        }
+        return onmt.utils.Statistics(self.num_experts, **stat_dict)
 
     def _bottle(self, _v):
         return _v.view(-1, _v.size(2))
@@ -227,15 +224,17 @@ class NMTLossCompute(LossComputeBase):
     """
 
     def __init__(self, criterion, generator, normalization="sents",
-                 lambda_coverage=0.0, lambda_align=0.0):
+                 lambda_coverage=0.0, lambda_align=0.0, num_experts=1):
         super(NMTLossCompute, self).__init__(criterion, generator)
         self.lambda_coverage = lambda_coverage
         self.lambda_align = lambda_align
+        self.num_experts = num_experts
 
-    def _make_shard_state(self, batch, output, range_, attns=None):
+    def _make_shard_state(self, batch, output, attns=None, side='x2y'):
+        target = batch.tgt[0] if side == 'x2y' else batch.src[0]
         shard_state = {
             "output": output,
-            "target": batch.tgt[range_[0] + 1: range_[1], :, 0],
+            "target": target[1:, :, 0],
         }
         if self.lambda_coverage != 0.0:
             coverage = attns.get("coverage", None)
@@ -262,7 +261,7 @@ class NMTLossCompute(LossComputeBase):
                 "alignement attention head"
             assert align_idx is not None, "lambda_align != 0.0 requires " \
                 "provide guided alignement"
-            pad_tgt_size, batch_size, _ = batch.tgt.size()
+            pad_tgt_size, batch_size, _ = batch.tgt[0].size()
             pad_src_size = batch.src[0].size(0)
             align_matrix_size = [batch_size, pad_tgt_size, pad_src_size]
             ref_align = onmt.utils.make_batch_align_matrix(
@@ -275,15 +274,35 @@ class NMTLossCompute(LossComputeBase):
             })
         return shard_state
 
-    def _compute_loss(self, batch, output, target, std_attn=None,
-                      coverage_attn=None, align_head=None, ref_align=None):
+    def get_count(self, scores, gtruth):
+        pred = scores.max(1)[1]
+        non_padding = gtruth.ne(self.padding_idx)
+        num_correct = pred.eq(gtruth).masked_select(non_padding).sum().item()
+        num_non_padding = non_padding.sum().item()
+        return num_correct, num_non_padding
 
+    def compute_loss(self, output, target, reduced_sum=False, get_stat=False):
         bottled_output = self._bottle(output)
 
         scores = self.generator(bottled_output)
         gtruth = target.view(-1)
 
         loss = self.criterion(scores, gtruth)
+        if reduced_sum:
+            loss = loss.sum()
+        if get_stat:
+            # calculate stats
+            num_correct, n_words = self.get_count(scores, gtruth)
+            return loss, num_correct, n_words
+        return loss
+
+    def _compute_loss(self, output, target, std_attn=None, 
+                      coverage_attn=None, align_head=None, ref_align=None,
+                      side='x2y'):
+
+        loss, num_correct, n_words = \
+            self.compute_loss(output, target, reduced_sum=True, get_stat=True)
+
         if self.lambda_coverage != 0.0:
             coverage_loss = self._compute_coverage_loss(
                 std_attn=std_attn, coverage_attn=coverage_attn)
@@ -296,10 +315,10 @@ class NMTLossCompute(LossComputeBase):
             align_loss = self._compute_alignement_loss(
                 align_head=align_head, ref_align=ref_align)
             loss += align_loss
-        stats = self._stats(loss.clone(), scores, gtruth)
+        stats = self._stats(loss.clone(), num_correct, n_words, side=side)
 
         return loss, stats
-
+        
     def _compute_coverage_loss(self, std_attn, coverage_attn):
         covloss = torch.min(std_attn, coverage_attn).sum()
         covloss *= self.lambda_coverage

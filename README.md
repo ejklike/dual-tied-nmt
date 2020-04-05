@@ -1,3 +1,25 @@
+DATADIR = data/retro_transformer_data/USPTO-50k_no_rxn/
+SRC_TRN = $DATADIR/src-train.txt
+SRC_VAL = $DATADIR/src-val.txt
+SRC_TST = $DATADIR/src-test.txt
+TGT_TRN = $DATADIR/tgt-train.txt
+TGT_VAL = $DATADIR/tgt-val.txt
+TGT_TST = $DATADIR/tgt-test.txt
+
+
+> python preprocess.py -train_src data/src-train.txt -train_tgt data/tgt-train.txt -valid_src data/src-val.txt -valid_tgt data/tgt-val.txt -save_data data/data -src_vocab_size 1000 -tgt_vocab_size 1000 -share_vocab
+
+<!-- option: -share_vocab -->
+
+> python train.py -data data/data -save_model data/tmp -rnn_size 10 -word_vec_size 10 -heads 1 -layers 1 -train_steps 100 -valid_step 100 -optim adam  -learning_rate 0.001 -encoder_type transformer -decoder_type transformer -batch_type tokens -normalization tokens -world_size 1 -gpu_ranks 0 -share_embeddings -method hMoEup -num_experts 3
+
+<!-- option: -world_size 1 -gpu_ranks 0  -->
+
+> python translate.py -model ./data/tmp_step_100.pt -src data/src-test.10.txt -output data/pred.10.txt -replace_unk -beam_size 10 -n_best 10
+
+<!-- option: -gpu 0 -->
+
+
 # OpenNMT-py: Open-Source Neural Machine Translation
 
 [![Build Status](https://travis-ci.org/OpenNMT/OpenNMT-py.svg?branch=master)](https://travis-ci.org/OpenNMT/OpenNMT-py)

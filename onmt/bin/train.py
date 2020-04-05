@@ -119,12 +119,10 @@ def batch_producer(generator_to_serve, queues, semaphore, opt):
 
     for device_id, q in cycle(enumerate(queues)):
         b.dataset = None
-        if isinstance(b.src, tuple):
-            b.src = tuple([_.to(torch.device(device_id))
-                           for _ in b.src])
-        else:
-            b.src = b.src.to(torch.device(device_id))
-        b.tgt = b.tgt.to(torch.device(device_id))
+        b.src = tuple([_.to(torch.device(device_id))
+                        for _ in b.src])
+        b.tgt = tuple([_.to(torch.device(device_id))
+                        for _ in b.tgt])
         b.indices = b.indices.to(torch.device(device_id))
         b.alignment = b.alignment.to(torch.device(device_id)) \
             if hasattr(b, 'alignment') else None

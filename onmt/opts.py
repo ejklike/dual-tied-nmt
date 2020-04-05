@@ -20,6 +20,14 @@ def model_opts(parser):
     These options are passed to the construction of the model.
     Be careful with these as they will be used during translation.
     """
+    # MoE
+    group = parser.add_argument_group('Custom')
+#     group.add('--method', '-method', default='hMoEup',
+#               choices=['dual', 'sMoElp', 'sMoEup', 'hMoElp', 'hMoEup'])
+    group.add('--num_experts', '-num_experts', default=3, type=int, 
+              metavar='N', help='number of experts')
+    group.add('--tied', '-tied', action='store_true',
+              help='parameter tying btw enc & dec')
 
     # Embedding Options
     group = parser.add_argument_group('Model-Embeddings')
@@ -307,12 +315,12 @@ def preprocess_opts(parser):
 
     # Truncation options, for text corpus
     group = parser.add_argument_group('Pruning')
-    group.add('--src_seq_length', '-src_seq_length', type=int, default=50,
+    group.add('--src_seq_length', '-src_seq_length', type=int, default=1000,
               help="Maximum source sequence length")
     group.add('--src_seq_length_trunc', '-src_seq_length_trunc',
               type=int, default=None,
               help="Truncate source sequence length.")
-    group.add('--tgt_seq_length', '-tgt_seq_length', type=int, default=50,
+    group.add('--tgt_seq_length', '-tgt_seq_length', type=int, default=1000,
               help="Maximum target sequence length to keep.")
     group.add('--tgt_seq_length_trunc', '-tgt_seq_length_trunc',
               type=int, default=None,
@@ -623,6 +631,10 @@ def train_opts(parser):
 
 def translate_opts(parser):
     """ Translation / inference options """
+    group = parser.add_argument_group('MoE-alpha')
+    group.add('--num_experts', '-num_experts', default=3, type=int, 
+              metavar='N', help='number of experts')
+
     group = parser.add_argument_group('Model')
     group.add('--model', '-model', dest='models', metavar='MODEL',
               nargs='+', type=str, default=[], required=True,
@@ -651,7 +663,7 @@ def translate_opts(parser):
               help='Source directory for image or audio files')
     group.add('--tgt', '-tgt',
               help='True target sequence (optional)')
-    group.add('--shard_size', '-shard_size', type=int, default=10000,
+    group.add('--shard_size', '-shard_size', type=int, default=1000000,
               help="Divide src and tgt (if applicable) into "
                    "smaller multiple src and tgt files, then "
                    "build shards, each shard will have "
@@ -693,7 +705,7 @@ def translate_opts(parser):
               help='Beam size')
     group.add('--min_length', '-min_length', type=int, default=0,
               help='Minimum prediction length')
-    group.add('--max_length', '-max_length', type=int, default=100,
+    group.add('--max_length', '-max_length', type=int, default=200,
               help='Maximum prediction length.')
     group.add('--max_sent_length', '-max_sent_length', action=DeprecateAction,
               help="Deprecated, use `-max_length` instead")
