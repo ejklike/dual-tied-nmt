@@ -2,7 +2,16 @@
 
 ONMT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-#======= EXPERIMENT SETUP ======
+if [[ ! -z $1 ]]; then
+    STEP=$1
+fi
+
+#======= EXPERIMENT INPUT ======
+GPUARG="" # default
+GPUARG="0"
+
+BEAM=10
+
 BATCH_SIZE=4096
 VALID_STEP=10000
 REPORT_EVERY=1000
@@ -15,26 +24,10 @@ REPORT_EVERY=1000
 NAME="l3_tied"
 USER_ARGS="-num_experts 3 -tied"
 
-NAME="hMoEup3"
-USER_ARGS="-method hMoEup -num_experts 3"
+NAME="l5_tied"
+USER_ARGS="-num_experts 5 -tied"
 
-# NAME="hMoElp3"
-# USER_ARGS="-method hMoElp -num_experts 3"
-
-# NAME="hMoEup3_tied"
-# USER_ARGS="-method hMoEup -num_experts 3 -tied"
-
-# NAME="hMoElp3_tied"
-# USER_ARGS="-method hMoElp -num_experts 3 -tied"
-
-# ===
-# BATCH_SIZE=1024
-
-# NAME="sMoEup3_tied"
-# USER_ARGS="-method sMoEup -num_experts 3 -tied"
-
-# VALID_STEP=10000
-# REPORT_EVERY=1000
+#======= EXPERIMENT SETUP ======
 
 OUT="onmt-runs/$NAME"
 
@@ -50,12 +43,7 @@ VALID_TGT=$DATA/tgt-val.txt
 TEST_SRC=$DATA/src-test.txt
 TEST_TGT=$DATA/tgt-test.txt
 
-
 DATA_PREFIX=data/USPTO-50k_processed
-
-GPUARG="" # default
-GPUARG="0"
-
 
 #====== EXPERIMENT BEGIN ======
 
@@ -67,7 +55,7 @@ for f in $TRAIN_SRC $TRAIN_TGT $VALID_SRC $VALID_TGT $TEST_SRC $TEST_TGT; do
     fi
 done
 
-if [[ -z $1 ]]; then
+if [[ -z $STEP ]]; then
     echo "Output dir = $OUT"
     [ -d $OUT ] || mkdir -p $OUT
     [ -d $OUT/models ] || mkdir $OUT/models
@@ -88,8 +76,8 @@ if [[ -z $1 ]]; then
     #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
     #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
     # fi
-    # GPU_OPTS="-world_size 2 -gpu_ranks 0 1 -accum_count 2" # $GPUARG"
-    GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
+    GPU_OPTS="-world_size 2 -gpu_ranks 0 1 -accum_count 2" # $GPUARG"
+    # GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
     CMD="python $ONMT/train.py -data $DATA_PREFIX \
         -save_model $OUT/models/$NAME $GPU_OPTS -train_steps 500000 \
         -save_checkpoint_steps 10000 -keep_checkpoint 50 \
@@ -109,12 +97,7 @@ if [[ -z $1 ]]; then
     eval "$CMD"
 fi
 
-#EOF
-
-BEAM=10
-
-if [[ ! -z $1 ]]; then
-    STEP=$1
+if [[ ! -z $STEP ]]; then
     GPU_OPTS=""
     if [ ! -z $GPUARG ]; then
         GPU_OPTS="-gpu 0"
