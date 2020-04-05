@@ -220,6 +220,18 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         if model_opt.share_decoder_embeddings:
             generator.linear.weight = decoder.embeddings.word_lut.weight
 
+    # Build prior modeling
+    prior_x2y = prior_y2x = None
+    if model_opt.learned_prior:
+        prior_x2y = onmt.models.Classifier(
+            model_opt.enc_rnn_size, model_opt.num_experts, 
+            dropout=(model_opt.dropout[0] if type(model_opt.dropout) is list
+                     else model_opt.dropout))
+        prior_y2x = onmt.models.Classifier(
+            model_opt.enc_rnn_size, model_opt.num_experts, 
+            dropout=(model_opt.dropout[0] if type(model_opt.dropout) is list
+                     else model_opt.dropout))
+
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
         # This preserves backward-compat for models using customed layernorm
@@ -236,19 +248,30 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
 
         model.load_state_dict(checkpoint['model'], strict=False)
         generator.load_state_dict(checkpoint['generator'], strict=False)
+        if model_opt.learned_prior:
+            prior_x2y.load_state_dict(checkpoint['prior_x2y'], strict=False)
+            prior_y2x.load_state_dict(checkpoint['prior_y2x'], strict=False)
     else:
         if model_opt.param_init != 0.0:
-            for p in model.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
-            for p in generator.parameters():
-                p.data.uniform_(-model_opt.param_init, model_opt.param_init)
+            def init_param(target_model):
+                for p in target_model.parameters():
+                    p.data.uniform_(-model_opt.param_init, 
+                                    model_opt.param_init)
+            init_param(model)
+            init_param(generator)
+            if model_opt.learned_prior:
+                init_param(prior_x2y)
+                init_param(prior_y2x)
         if model_opt.param_init_glorot:
-            for p in model.parameters():
-                if p.dim() > 1:
-                    xavier_uniform_(p)
-            for p in generator.parameters():
-                if p.dim() > 1:
-                    xavier_uniform_(p)
+            def init_glorot(target_model):
+                for p in target_model.parameters():
+                    if p.dim() > 1:
+                        xavier_uniform_(p)
+            init_glorot(model)
+            init_glorot(generator)
+            if model_opt.learned_prior:
+                init_glorot(prior_x2y)
+                init_glorot(prior_y2x)
 
         if hasattr(model.encoder, 'embeddings'):
             model.encoder.embeddings.load_pretrained_vectors(
@@ -261,6 +284,8 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
                 model_opt.pre_word_vecs_dec)
 
     model.generator = generator
+    model.prior_x2y = prior_x2y
+    model.prior_y2x = prior_y2x
     model.to(device)
     if model_opt.model_dtype == 'fp16' and model_opt.optim == 'fusedadam':
         model.half()

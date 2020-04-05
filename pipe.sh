@@ -10,7 +10,10 @@ fi
 GPUARG="" # default
 GPUARG="0"
 
+TRAIN_FROM_ARGS=""
+
 BEAM=10
+TEST_BATCH_SIZE=32
 
 BATCH_SIZE=4096
 VALID_STEP=10000
@@ -21,11 +24,12 @@ REPORT_EVERY=1000
 # REPORT_EVERY=10
 
 # update these variables
-NAME="l3_tied"
+NAME="l3up_tied"
 USER_ARGS="-num_experts 3 -tied"
 
-NAME="l5_tied"
-USER_ARGS="-num_experts 5 -tied"
+NAME="l3lp_tied"
+USER_ARGS="-num_experts 3 -tied -learned_prior"
+# TRAIN_FROM_STEP=10
 
 #======= EXPERIMENT SETUP ======
 
@@ -76,11 +80,15 @@ if [[ -z $STEP ]]; then
     #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
     #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
     # fi
-    GPU_OPTS="-world_size 2 -gpu_ranks 0 1 -accum_count 2" # $GPUARG"
-    # GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
+    # GPU_OPTS="-world_size 2 -gpu_ranks 0 1 -accum_count 2" # $GPUARG"
+    GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
+    if [[ ! -z $TRAIN_FROM_STEP ]]; then
+        TRAIN_FROM_ARGS="-train_from \
+        $OUT/models/${NAME}_step_${TRAIN_FROM_STEP}.pt"
+    fi
     CMD="python $ONMT/train.py -data $DATA_PREFIX \
         -save_model $OUT/models/$NAME $GPU_OPTS -train_steps 500000 \
-        -save_checkpoint_steps 10000 -keep_checkpoint 50 \
+        -save_checkpoint_steps $VALID_STEP -keep_checkpoint 50 \
         -valid_step $VALID_STEP -report_every $REPORT_EVERY \
         -batch_size $BATCH_SIZE -batch_type tokens -normalization tokens \
         -max_grad_norm 0 -optim adam -adam_beta1 0.9 -adam_beta2 0.998 \
@@ -91,7 +99,7 @@ if [[ -z $STEP ]]; then
         -heads 8 -transformer_ff 2048 \
         -encoder_type transformer -decoder_type transformer \
         -dropout 0.1 -position_encoding -share_embeddings \
-        -global_attention general -global_attention_function softmax -self_attn_type scaled-dot $USER_ARGS \
+        -global_attention general -global_attention_function softmax -self_attn_type scaled-dot $USER_ARGS $TRAIN_FROM_ARGS \
         2>&1 | tee -a $OUT/train_$NAME.log"
     echo "Training command :: $CMD"
     eval "$CMD"
@@ -112,7 +120,7 @@ if [[ ! -z $STEP ]]; then
         -src $TEST_SRC -tgt $TEST_TGT \
         -output $TRANSLATE_OUT \
         -beam_size $BEAM -n_best $BEAM \
-        -batch_size 128 \
+        -batch_size $TEST_BATCH_SIZE \
         -replace_unk $GPU_OPTS \
         2>&1 | tee -a $OUT/test/test_$NAME.log
 
@@ -125,6 +133,8 @@ if [[ ! -z $STEP ]]; then
     python $ONMT/evaluate.py -beam_size $BEAM \
     -output $TRANSLATE_OUT/pred_cycle.txt -target $TEST_TGT \
     -log_file $TRANSLATE_OUT/pred_cycle.txt.score
+    echo "Check Output dir = $TRANSLATE_OUT"
+
 fi
 #-verbose 
 

@@ -28,6 +28,8 @@ def model_opts(parser):
               metavar='N', help='number of experts')
     group.add('--tied', '-tied', action='store_true',
               help='parameter tying btw enc & dec')
+    group.add('--learned_prior', '-learned_prior', action='store_true',
+              help='learned prior')
 
     # Embedding Options
     group = parser.add_argument_group('Model-Embeddings')

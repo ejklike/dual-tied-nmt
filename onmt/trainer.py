@@ -93,6 +93,7 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            dropout_steps=dropout_steps,
                            source_noise=source_noise,
                            num_experts=opt.num_experts,
+                           learned_prior=opt.learned_prior,
                            vocab=tgt_field.vocab)
     return trainer
 
@@ -131,7 +132,8 @@ class Trainer(object):
                  report_manager=None, with_align=False, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
-                 source_noise=None, num_experts=1, dual=False, vocab=None):
+                 source_noise=None, num_experts=1, learned_prior=False, 
+                 vocab=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -158,6 +160,7 @@ class Trainer(object):
         self.dropout_steps = dropout_steps
         self.source_noise = source_noise
         self.num_experts = num_experts
+        self.learned_prior = learned_prior
         self.vocab = vocab
 
         for i in range(len(self.accum_count_l)):
@@ -397,6 +400,13 @@ class Trainer(object):
         loss, stat_dict = self._get_loss_y(
             dec_in, target, enc, mem, x, xlen, side=side, 
             reduced_sum=True)
+        if self.learned_prior:
+            prior = (self.model.prior_x2y if side == 'x2y' else 
+                     self.model.prior_y2x)
+            prior_lprob = prior(mem.detach(), xlen)
+            prior_loss = - prior_lprob.gather(
+                dim=-1, index=winners.unsqueeze(-1))
+            loss += prior_loss.sum()
         return loss, stat_dict
 
     def _get_loss_y(self, dec_in, target, enc_state, memory_bank, 
@@ -418,8 +428,8 @@ class Trainer(object):
             'n_words_%s' %side: n_words}
         return loss, stat_dict
 
-    def get_lprob_y(self, dec_in, target, enc_state, memory_bank, 
-                    x, lengths, side='x2y'):
+    def _get_lprob_y(self, dec_in, target, enc_state, memory_bank, 
+                     x, lengths, side='x2y'):
         B = len(lengths)
         loss, stat_dict = self._get_loss_y(
             dec_in, target, enc_state, memory_bank, x, lengths, side=side)
@@ -427,8 +437,7 @@ class Trainer(object):
         lprob = -loss.sum(dim=1, keepdim=True)  # -> B x 1
         return lprob
 
-    def get_lprob_yz_x(self, x, y, xlen, winners=None, 
-                       side='x2y', only_y=False):
+    def get_lprob_yz_x(self, x, y, xlen, winners=None, side='x2y'):
         """get log p(y,z|x) tensor
             whether z is known or unknown"""
         enc, mem, _ = self.model.encoder(x, xlen)
@@ -437,15 +446,27 @@ class Trainer(object):
             lprob_y = []
             for i in range(self.num_experts):
                 dec_in[0, :, 0] = self.expert_index(i)
-                lprob_y_k = self.get_lprob_y(
+                lprob_y_k = self._get_lprob_y(
                     dec_in, target, enc, mem, x, xlen, side=side)
                 lprob_y.append(lprob_y_k)
             lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
         else:
             dec_in[0, :, 0] = self.expert_index(winners)
-            lprob_y = self.get_lprob_y(
+            lprob_y = self._get_lprob_y(
                 dec_in, target, enc, mem, x, xlen, side=side)  # -> B
-        return lprob_y # lprob_yz == lprob_y since we use uniform prior
+
+        lprob_yz = lprob_y
+        if self.learned_prior:
+            prior = (self.model.prior_x2y if side == 'x2y' else 
+                     self.model.prior_y2x)
+            lprob_z = prior(mem.detach(), xlen) # -> B x K
+            
+            if winners is not None:
+                lprob_z = lprob_yz.gather(dim=-1, index=winners.unsqueeze(-1))
+            
+            lprob_yz += lprob_z
+                
+        return lprob_yz
 
     def _gradient_accumulation(self, true_batches, normalization_x2y, 
                                normalization_y2x, total_stats, report_stats):

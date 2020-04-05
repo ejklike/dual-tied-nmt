@@ -322,6 +322,8 @@ class Translator(object):
         assert direction in ['x2y', 'y2x']
         self.model.decoder = (self.model.decoder_x2y if direction == 'x2y' 
                               else self.model.decoder_y2x)
+        self.model.prior = (self.model.prior_x2y if direction == 'x2y' 
+                              else self.model.prior_y2x)
 
         if batch_size is None:
             raise ValueError("batch_size must be set")
@@ -698,11 +700,10 @@ class Translator(object):
                                        initial_token=initial_token)
         if fn_map_state is not None:
             self.model.decoder.map_state(fn_map_state)
-
+        
         # (3) Begin decoding step by step:
         for step in range(decode_strategy.max_length):
             decoder_input = decode_strategy.current_predictions.view(1, -1, 1)
-
             log_probs, attn = self._decode_and_generate(
                 decoder_input,
                 memory_bank,
@@ -712,6 +713,10 @@ class Translator(object):
                 src_map=src_map,
                 step=step,
                 batch_offset=decode_strategy.batch_offset)
+            if step == 0 and self.model.prior is not None:
+                lprob_z = self.model.prior(memory_bank, memory_lengths)
+                log_probs += tile(lprob_z[:, self.expert_id].unsqueeze(-1), 
+                                  self._tgt_vocab_len, dim=1)
 
             decode_strategy.advance(log_probs, attn)
             any_finished = decode_strategy.is_finished.any()
