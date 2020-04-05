@@ -282,6 +282,7 @@ class NMTLossCompute(LossComputeBase):
         return num_correct, num_non_padding
 
     def compute_loss(self, output, target, reduced_sum=False, get_stat=False):
+        seqlen, batch_size, _ = output.size()
         bottled_output = self._bottle(output)
 
         scores = self.generator(bottled_output)
@@ -290,6 +291,9 @@ class NMTLossCompute(LossComputeBase):
         loss = self.criterion(scores, gtruth)
         if reduced_sum:
             loss = loss.sum()
+        else:
+            loss = loss.view([seqlen, batch_size]).sum(dim=0)
+
         if get_stat:
             # calculate stats
             num_correct, n_words = self.get_count(scores, gtruth)

@@ -390,23 +390,43 @@ class Trainer(object):
     def expert_index(self, i):
         return i + self.vocab.stoi['<expert_0>']
 
+    def get_dec_in(self, dec_in, winners):
+        dec_in_ = dec_in.clone()
+        dec_in_[0, :, 0] = self.expert_index(winners)
+        return dec_in_
+
     def get_loss_stats(self, x, y, xlen, winners, side='x2y'):
         """get log p(y,z|x) tensor
             whether z is known or unknown"""
 
         enc, mem, _ = self.model.encoder(x, xlen)
-        dec_in, target = y[:-1], y[1:]
-        dec_in[0, :, 0] = self.expert_index(winners)
+        input_, target = y[:-1], y[1:]
+
+        dec_in = self.get_dec_in(input_, winners)
         loss, stat_dict = self._get_loss_y(
             dec_in, target, enc, mem, x, xlen, side=side, 
             reduced_sum=True)
+        
         if self.learned_prior:
             prior = (self.model.prior_x2y if side == 'x2y' else 
                      self.model.prior_y2x)
-            prior_lprob = prior(mem.detach(), xlen)
-            prior_loss = - prior_lprob.gather(
-                dim=-1, index=winners.unsqueeze(-1))
-            loss += prior_loss.sum()
+            # obtain all cases of lprob_yz
+            lprob_y = []
+            for i in range(self.num_experts):
+                dec_in = self.get_dec_in(input_, i)
+                lprob_y_k = self._get_lprob_y(
+                    dec_in, target, enc, mem, x, xlen, side=side)
+                lprob_y.append(lprob_y_k)
+            lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
+            lprob_z = prior(mem.detach(), xlen)  # -> B x K
+            lprob_yz = lprob_y + lprob_z  # -> B x K
+            # gather lprobs of winners
+            lprob_yz_winner = lprob_yz.gather(
+                dim=-1, index=winners.unsqueeze(-1))  # -> B
+            logsumprob_yz = torch.logsumexp(lprob_yz, dim=1)  # -> B
+            # get loss
+            loss = -(lprob_yz_winner - logsumprob_yz).sum()
+
         return loss, stat_dict
 
     def _get_loss_y(self, dec_in, target, enc_state, memory_bank, 
@@ -441,17 +461,17 @@ class Trainer(object):
         """get log p(y,z|x) tensor
             whether z is known or unknown"""
         enc, mem, _ = self.model.encoder(x, xlen)
-        dec_in, target = y[:-1], y[1:]
+        input_, target = y[:-1], y[1:]
         if winners is None:
             lprob_y = []
             for i in range(self.num_experts):
-                dec_in[0, :, 0] = self.expert_index(i)
+                dec_in = self.get_dec_in(input_, i)
                 lprob_y_k = self._get_lprob_y(
                     dec_in, target, enc, mem, x, xlen, side=side)
                 lprob_y.append(lprob_y_k)
             lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
         else:
-            dec_in[0, :, 0] = self.expert_index(winners)
+            dec_in = self.get_dec_in(input_, winners)
             lprob_y = self._get_lprob_y(
                 dec_in, target, enc, mem, x, xlen, side=side)  # -> B
 
@@ -592,6 +612,25 @@ class Trainer(object):
         if self.source_noise is not None:
             return self.source_noise(batch)
         return batch
+
+
+class LogSumExpMoE(torch.autograd.Function):
+    """Standard LogSumExp forward pass, but use *posterior* for the backward.
+    See `"Mixture Models for Diverse Machine Translation: Tricks of the Trade"
+    (Shen et al., 2019) <https://arxiv.org/abs/1902.07816>`_.
+    """
+
+    @staticmethod
+    def forward(ctx, logp, posterior, dim=-1):
+        ctx.save_for_backward(posterior)
+        ctx.dim = dim
+        return torch.logsumexp(logp, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        posterior, = ctx.saved_tensors
+        grad_logp = grad_output.unsqueeze(ctx.dim) * posterior
+        return grad_logp, None, None
 
 
 class LogSumExpMoE(torch.autograd.Function):
