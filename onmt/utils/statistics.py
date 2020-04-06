@@ -178,3 +178,14 @@ class Statistics(object):
         writer.add_scalar(prefix + "/accuracy", self.accuracy(), step)
         writer.add_scalar(prefix + "/tgtper", self.n_words / t, step)
         writer.add_scalar(prefix + "/lr", learning_rate, step)
+
+    def log_records(self, step, lr, record_to=None):
+        assert record_to is not None
+        with open(record_to, 'a+') as f:
+            line = ('%d,%g,%g,%g,%g,%g,%g\n' % (
+                    step, self.elapsed_time(), lr, 
+                    self.accuracy('x2y'), 
+                    self.accuracy('y2x'),
+                    self.ppl('x2y'),
+                    self.ppl('y2x')))
+            f.write(line)
