@@ -1,5 +1,6 @@
 """ Report manager utility """
 from __future__ import print_function
+import os
 import time
 from datetime import datetime
 
@@ -20,8 +21,13 @@ def build_report_manager(opt, gpu_rank):
     else:
         writer = None
 
+    record_dir = None
+    if gpu_rank == 0:
+        record_dir = os.path.dirname(opt.save_model)        
+
     report_mgr = ReportMgr(opt.report_every, num_experts=opt.num_experts, 
-                           start_time=-1, tensorboard_writer=writer)
+                           start_time=-1, tensorboard_writer=writer,
+                           record_dir=record_dir)
     return report_mgr
 
 
@@ -93,14 +99,19 @@ class ReportMgrBase(object):
         """
         self._report_step(
             lr, step, train_stats=train_stats, valid_stats=valid_stats)
+        self._record_step(
+            lr, step, train_stats=train_stats, valid_stats=valid_stats)
 
     def _report_step(self, *args, **kwargs):
+        raise NotImplementedError()
+
+    def _record_step(self, *args, **kwargs):
         raise NotImplementedError()
 
 
 class ReportMgr(ReportMgrBase):
     def __init__(self, report_every, num_experts=1, start_time=-1., 
-                 tensorboard_writer=None):
+                 tensorboard_writer=None, record_dir=None):
         """
         A report manager that writes statistics on standard output as well as
         (optionally) TensorBoard
@@ -112,6 +123,10 @@ class ReportMgr(ReportMgrBase):
         """
         super(ReportMgr, self).__init__(report_every, num_experts, start_time)
         self.tensorboard_writer = tensorboard_writer
+        self.record_train = self.record_valid = None
+        if record_dir is not None:
+            self.record_train = os.path.join(record_dir, 'record_train.csv')
+            self.record_valid = os.path.join(record_dir, 'record_valid.csv')
 
     def maybe_log_tensorboard(self, stats, prefix, learning_rate, step):
         if self.tensorboard_writer is not None:
@@ -130,6 +145,7 @@ class ReportMgr(ReportMgrBase):
                                    "progress",
                                    learning_rate,
                                    step)
+        self._record_step(learning_rate, step, train_stats=report_stats)
         report_stats = onmt.utils.Statistics(self.num_experts)
 
         return report_stats
@@ -160,3 +176,12 @@ class ReportMgr(ReportMgrBase):
                                        "valid",
                                        lr,
                                        step)
+
+    def _record_step(self, lr, step, train_stats=None, valid_stats=None):
+        """
+        See base class method `ReportMgrBase.report_step`.
+        """
+        if train_stats is not None and self.record_train is not None:
+            train_stats.log_records(step, lr, self.record_train)
+        if valid_stats is not None and self.record_valid is not None: 
+            valid_stats.log_records(step, lr, self.record_valid)
