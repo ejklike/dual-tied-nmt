@@ -30,6 +30,12 @@ def model_opts(parser):
               help='parameter tying btw enc & dec')
     group.add('--learned_prior', '-learned_prior', action='store_true',
               help='learned prior')
+    group.add('--sampling_z', '-sampling_z', action='store_true',
+              help='sampling_z')
+    group.add('--soft_selection', '-soft_selection', action='store_true',
+              help='soft_selection')
+    group.add('--weighted_grad', '-weighted_grad', action='store_true',
+              help='soft_selection')
 
     # Embedding Options
     group = parser.add_argument_group('Model-Embeddings')
