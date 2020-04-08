@@ -221,13 +221,9 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             generator.linear.weight = decoder.embeddings.word_lut.weight
 
     # Build prior modeling
-    prior_x2y = prior_y2x = None
+    prior = None
     if model_opt.learned_prior:
-        prior_x2y = onmt.models.Classifier(
-            model_opt.enc_rnn_size, model_opt.num_experts, 
-            dropout=(model_opt.dropout[0] if type(model_opt.dropout) is list
-                     else model_opt.dropout))
-        prior_y2x = onmt.models.Classifier(
+        prior = onmt.models.Classifier(
             model_opt.enc_rnn_size, model_opt.num_experts, 
             dropout=(model_opt.dropout[0] if type(model_opt.dropout) is list
                      else model_opt.dropout))
@@ -249,8 +245,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         model.load_state_dict(checkpoint['model'], strict=False)
         generator.load_state_dict(checkpoint['generator'], strict=False)
         if model_opt.learned_prior:
-            prior_x2y.load_state_dict(checkpoint['prior_x2y'], strict=False)
-            prior_y2x.load_state_dict(checkpoint['prior_y2x'], strict=False)
+            prior.load_state_dict(checkpoint['prior'], strict=False)
     else:
         if model_opt.param_init != 0.0:
             def init_param(target_model):
@@ -260,8 +255,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             init_param(model)
             init_param(generator)
             if model_opt.learned_prior:
-                init_param(prior_x2y)
-                init_param(prior_y2x)
+                init_param(prior)
         if model_opt.param_init_glorot:
             def init_glorot(target_model):
                 for p in target_model.parameters():
@@ -270,8 +264,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             init_glorot(model)
             init_glorot(generator)
             if model_opt.learned_prior:
-                init_glorot(prior_x2y)
-                init_glorot(prior_y2x)
+                init_glorot(prior)
 
         if hasattr(model.encoder, 'embeddings'):
             model.encoder.embeddings.load_pretrained_vectors(
@@ -284,8 +277,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
                 model_opt.pre_word_vecs_dec)
 
     model.generator = generator
-    model.prior_x2y = prior_x2y
-    model.prior_y2x = prior_y2x
+    model.prior = prior
     model.to(device)
     if model_opt.model_dtype == 'fp16' and model_opt.optim == 'fusedadam':
         model.half()

@@ -123,10 +123,8 @@ class ModelSaver(ModelSaverBase):
             'opt': self.model_opt,
             'optim': self.optim.state_dict(),
         }
-        if model.prior_x2y:
-            checkpoint['prior_x2y'] = model.prior_x2y.state_dict() 
-        if model.prior_y2x:
-            checkpoint['prior_y2x'] = model.prior_y2x.state_dict() 
+        if model.prior:
+            checkpoint['prior'] = model.prior.state_dict()
 
         logger.info("Saving checkpoint %s_step_%d.pt" % (self.base_path, step))
         checkpoint_path = '%s_step_%d.pt' % (self.base_path, step)

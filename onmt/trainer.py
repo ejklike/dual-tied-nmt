@@ -417,11 +417,9 @@ class Trainer(object):
         
         # add prior loss to the loss above, if available
         if self.learned_prior:
-            prior = (self.model.prior_x2y if side == 'x2y' else 
-                     self.model.prior_y2x)
             ### excluding logsumexp
             # lprob_z = prior(mem, xlen)  # -> B x K
-            lprob_z = prior(mem.detach(), xlen)  # -> B x K
+            lprob_z = self.model.prior(mem.detach(), xlen)  # -> B x K
             lprob_z_winner = lprob_z.gather(
                 dim=-1, index=winners.unsqueeze(-1))  # -> B
             loss_z = - lprob_z_winner.sum()
@@ -484,11 +482,9 @@ class Trainer(object):
                 dec_in, target, enc, mem, x, xlen, side=side)  # -> B
 
         lprob_yz = lprob_y
-        if self.learned_prior:
-            prior = (self.model.prior_x2y if side == 'x2y' else 
-                     self.model.prior_y2x)
+        if self.learned_prior and side == 'x2y':
             # lprob_z = prior(mem, xlen) # -> B x K
-            lprob_z = prior(mem.detach(), xlen) # -> B x K
+            lprob_z = self.model.prior(mem.detach(), xlen) # -> B x K
             
             if winners is not None:
                 lprob_z = lprob_yz.gather(dim=-1, index=winners.unsqueeze(-1))
@@ -521,27 +517,19 @@ class Trainer(object):
             with torch.no_grad():
                 lprob_yz = self.get_lprob_yz_x(
                     src, tgt, src_lengths, side='x2y')  # B x K
-                lprob_xz = self.get_lprob_yz_x(
-                    tgt, src, tgt_lengths, side='y2x')  # B x K
-                rz1 = torch.nn.functional.softmax(lprob_yz, dim=1)
-                rz2 = torch.nn.functional.softmax(lprob_xz, dim=1)
-                rz = torch.sqrt(rz1 * rz2) # posterior!
+                rz = torch.nn.functional.softmax(lprob_yz, dim=1) # posterior!
             self.model.train()
 
             assert not rz.requires_grad
 
             # compute loss
             if self.soft_selection:
-                lprob_yz = self.get_lprob_yz_x(
+                lprob_y, lprob_z = self.get_lprob_yz_x(
                     src, tgt, src_lengths, side='x2y')  # B x K
-                lprob_xz = self.get_lprob_yz_x(
+                lprob_x = self.get_lprob_yz_x(
                     tgt, src, tgt_lengths, side='y2x')  # B x K
-                if self.weighted_grad:
-                    loss_yz = -LogSumExpMoE.apply(lprob_yz, rz1, 1).sum()
-                    loss_xz = -LogSumExpMoE.apply(lprob_xz, rz2, 1).sum()
-                else:
-                    loss_yz = -torch.logsumexp(lprob_yz, dim=1).sum()
-                    loss_xz = -torch.logsumexp(lprob_xz, dim=1).sum()
+                lprob_z = rz * (lprob_yz + lprob_x)     # B x K
+                loss_z = -lprob_z.sum(dim=-1)
                 stat_dict_x2y = {
                     'loss_x2y': loss_yz.item(),
                     'n_words_x2y': (tgt_lengths - 1).sum().item()}

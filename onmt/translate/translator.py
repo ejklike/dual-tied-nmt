@@ -322,8 +322,6 @@ class Translator(object):
         assert direction in ['x2y', 'y2x']
         self.model.decoder = (self.model.decoder_x2y if direction == 'x2y' 
                               else self.model.decoder_y2x)
-        self.model.prior = (self.model.prior_x2y if direction == 'x2y' 
-                              else self.model.prior_y2x)
 
         if batch_size is None:
             raise ValueError("batch_size must be set")
