@@ -52,20 +52,27 @@ def main(opt):
     correct = 0
     invalid_smiles = 0
 
-    logs = []    
+    logs = []
+    line_accuracy = ''
+    line_invalid = ''
     for i in range(1, opt.beam_size+1):
         correct += (test_df['rank'] == i).sum()
         invalid_smiles += (test_df['pred_can_{}'.format(i)] == '').sum()
 
-        accuracy = correct/total
-        invalid_ratio = invalid_smiles/(total*i)
+        accuracy = correct/total * 100
+        invalid_ratio = invalid_smiles/(total*i) * 100
         print('Top-{}: {:.1f}% || Invalid SMILES {:.2f}%'
-                .format(i, accuracy * 100, invalid_ratio * 100))
+                .format(i, accuracy, invalid_ratio))
         logs.append('%d,%g,%g\n' % (i, accuracy, invalid_ratio))
+        line_accuracy += '%g,' % accuracy
+        line_invalid += '%g,' % invalid_ratio
 
     if opt.log_file:
         with open(opt.log_file, 'w') as f:
             f.writelines(logs)
+    with open('results.csv', 'a+') as f:
+        line = opt.outputs + ',' + line_accuracy + line_invalid + '\n'
+        f.write(line)
 
 
 if __name__ == "__main__":
