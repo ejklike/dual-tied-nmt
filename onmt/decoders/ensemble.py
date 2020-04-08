@@ -109,14 +109,50 @@ class EnsembleGenerator(nn.Module):
             return distributions.mean(0)
 
 
+class EnsembleClassifier(nn.Module):
+    """
+    Dummy Generator that delegates to individual real Generators,
+    and then averages the resulting target distributions.
+    """
+    def __init__(self, model_classifiers, raw_probs=False):
+        super(EnsembleClassifier, self).__init__()
+        self.model_classifiers = nn.ModuleList(model_classifiers)
+        self._raw_probs = raw_probs
+
+    def forward(self, hidden, attn=None, src_map=None):
+        """
+        Compute a distribution over the target dictionary
+        by averaging distributions from models in the ensemble.
+        All models in the ensemble must share a target vocabulary.
+        """
+        distributions = torch.stack(
+                [mg(h) if attn is None else mg(h, attn, src_map)
+                 for h, mg in zip(hidden, self.model_classifiers)]
+            )
+        if self._raw_probs:
+            return torch.log(torch.exp(distributions).mean(0))
+        else:
+            return distributions.mean(0)
+
+
 class EnsembleModel(NMTModel):
     """Dummy NMTModel wrapping individual real NMTModels."""
     def __init__(self, models, raw_probs=False):
         encoder = EnsembleEncoder(model.encoder for model in models)
-        decoder = EnsembleDecoder(model.decoder for model in models)
-        super(EnsembleModel, self).__init__(encoder, decoder)
+        decoder_x2y = EnsembleDecoder(model.decoder_x2y for model in models)
+        decoder_y2x = EnsembleDecoder(model.decoder_y2x for model in models)
+
+        super(EnsembleModel, self).__init__(encoder, decoder_x2y, decoder_y2x)
         self.generator = EnsembleGenerator(
             [model.generator for model in models], raw_probs)
+        
+        self.prior_x2y = self.prior_y2x = None
+        if models[0].prior_x2y is not None:
+            self.prior_x2y = EnsembleClassifier(    
+                [model.prior_x2y for model in models], raw_probs)
+            self.prior_y2x = EnsembleClassifier(
+                [model.prior_y2x for model in models], raw_probs)
+            
         self.models = nn.ModuleList(models)
 
 
