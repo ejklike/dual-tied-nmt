@@ -94,6 +94,9 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            source_noise=source_noise,
                            num_experts=opt.num_experts,
                            learned_prior=opt.learned_prior,
+                           sampling_z=opt.sampling_z,
+                           soft_selection=opt.soft_selection,
+                           weighted_grad=opt.weighted_grad,
                            vocab=tgt_field.vocab)
     return trainer
 
@@ -133,6 +136,7 @@ class Trainer(object):
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
                  source_noise=None, num_experts=1, learned_prior=False, 
+                 sampling_z=False, soft_selection=False, weighted_grad=False, 
                  vocab=None):
         # Basic attributes.
         self.model = model
@@ -161,6 +165,9 @@ class Trainer(object):
         self.source_noise = source_noise
         self.num_experts = num_experts
         self.learned_prior = learned_prior
+        self.sampling_z = sampling_z
+        self.soft_selection = soft_selection
+        self.weighted_grad = weighted_grad
         self.vocab = vocab
 
         for i in range(len(self.accum_count_l)):
@@ -395,52 +402,43 @@ class Trainer(object):
         dec_in_[0, :, 0] = self.expert_index(winners)
         return dec_in_
 
-    def get_loss_stats(self, x, y, xlen, winners, side='x2y'):
+    def get_loss_stats(self, x, y, xlen, winners, side='x2y', weight=None):
         """get log p(y,z|x) tensor
             whether z is known or unknown"""
 
         enc, mem, _ = self.model.encoder(x, xlen)
         input_, target = y[:-1], y[1:]
-        
+
         # hard selection loss
         dec_in = self.get_dec_in(input_, winners)
         loss, stat_dict = self._get_loss_y(
             dec_in, target, enc, mem, x, xlen, side=side, 
-            reduced_sum=True)
+            reduced_sum=True, weight=weight)
         
         # add prior loss to the loss above, if available
         if self.learned_prior:
             prior = (self.model.prior_x2y if side == 'x2y' else 
                      self.model.prior_y2x)
             ### excluding logsumexp
+            # lprob_z = prior(mem, xlen)  # -> B x K
             lprob_z = prior(mem.detach(), xlen)  # -> B x K
             lprob_z_winner = lprob_z.gather(
                 dim=-1, index=winners.unsqueeze(-1))  # -> B
             loss_z = - lprob_z_winner.sum()
             loss += loss_z
             
-            # #### includling logsumexp
-            # # obtain all cases of lprob_yz
-            # lprob_y = []
-            # for i in range(self.num_experts):
-            #     dec_in = self.get_dec_in(input_, i)
-            #     lprob_y_k = self._get_lprob_y(
-            #         dec_in, target, enc, mem, x, xlen, side=side)
-            #     lprob_y.append(lprob_y_k)
-            # lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
-            # lprob_z = prior(mem.detach(), xlen)  # -> B x K
-            # lprob_yz = lprob_y + lprob_z  # -> B x K
-            # # gather lprobs of winners
-            # lprob_yz_winner = lprob_yz.gather(
-            #     dim=-1, index=winners.unsqueeze(-1))  # -> B
-            # logsumprob_yz = torch.logsumexp(lprob_yz, dim=1)  # -> B
-            # # get loss
-            # loss = -(lprob_yz_winner - logsumprob_yz).sum()
+            # ### ???????? add xent
+            # def _multinomial_xent(prob):
+            #     kl = - torch.exp(prob) * prob
+            #     return kl.sum()
+
+            # loss += _multinomial_xent(lprob_z)
+
 
         return loss, stat_dict
 
     def _get_loss_y(self, dec_in, target, enc_state, memory_bank, 
-                   x, lengths, side='x2y', reduced_sum=False):
+                    x, lengths, side='x2y', reduced_sum=False, weight=None):
         """log p(y|x,z) when z is specified in `dec_in`"""
         decoder = (self.model.decoder_x2y if side == 'x2y' else 
                     self.model.decoder_y2x)
@@ -451,7 +449,7 @@ class Trainer(object):
                              with_align=self.with_align)
 
         loss, num_correct, n_words = self.train_loss.compute_loss(
-            dec_out, target, reduced_sum=reduced_sum, get_stat=True)
+            dec_out, target, reduced_sum=reduced_sum, get_stat=True, weight=weight)
         stat_dict = {
             'loss_%s' %side: loss.sum().item(),
             'n_correct_%s' %side: num_correct,
@@ -489,6 +487,7 @@ class Trainer(object):
         if self.learned_prior:
             prior = (self.model.prior_x2y if side == 'x2y' else 
                      self.model.prior_y2x)
+            # lprob_z = prior(mem, xlen) # -> B x K
             lprob_z = prior(mem.detach(), xlen) # -> B x K
             
             if winners is not None:
@@ -520,7 +519,6 @@ class Trainer(object):
             # compute responsibilities r = p(z|x,y)
             self.model.eval()
             with torch.no_grad():
-                # we assume uniform prior. p(y,z|x) ~ p(y|x,z)
                 lprob_yz = self.get_lprob_yz_x(
                     src, tgt, src_lengths, side='x2y')  # B x K
                 lprob_xz = self.get_lprob_yz_x(
@@ -529,18 +527,45 @@ class Trainer(object):
                 rz2 = torch.nn.functional.softmax(lprob_xz, dim=1)
                 rz = torch.sqrt(rz1 * rz2) # posterior!
             self.model.train()
-                    
+
             assert not rz.requires_grad
 
             # compute loss
-            winners = rz.max(dim=1)[1]
-            # loss: -log p(y|x,z) p(z|x) p(x|y,z)
-            loss_x2y, stat_dict_x2y = self.get_loss_stats(
-                src, tgt, src_lengths, winners, side='x2y')
-            loss_y2x, stat_dict_y2x = self.get_loss_stats(
-                tgt, src, tgt_lengths, winners, side='y2x')
-            loss = loss_x2y + loss_y2x
-            
+            if self.soft_selection:
+                lprob_yz = self.get_lprob_yz_x(
+                    src, tgt, src_lengths, side='x2y')  # B x K
+                lprob_xz = self.get_lprob_yz_x(
+                    tgt, src, tgt_lengths, side='y2x')  # B x K
+                if self.weighted_grad:
+                    loss_yz = -LogSumExpMoE.apply(lprob_yz, rz1, 1).sum()
+                    loss_xz = -LogSumExpMoE.apply(lprob_xz, rz2, 1).sum()
+                else:
+                    loss_yz = -torch.logsumexp(lprob_yz, dim=1).sum()
+                    loss_xz = -torch.logsumexp(lprob_xz, dim=1).sum()
+                stat_dict_x2y = {
+                    'loss_x2y': loss_yz.item(),
+                    'n_words_x2y': (tgt_lengths - 1).sum().item()}
+                stat_dict_y2x = {
+                    'loss_y2x': loss_xz.item(),
+                    'n_words_y2x': (src_lengths - 1).sum().item()}
+                loss = loss_yz + loss_xz
+            else:
+                if self.learned_prior and self.sampling_z:
+                    winners = rz.multinomial(1).view(-1) # B
+                else:
+                    winners = rz.max(dim=1)[1] # B
+                
+                weight = None
+                if self.weighted_grad:
+                    weight = rz.gather(dim=-1, index=winners.unsqueeze(-1)) # B
+
+                # loss: -log p(y|x,z) p(z|x) p(x|y,z)
+                loss_x2y, stat_dict_x2y = self.get_loss_stats(
+                    src, tgt, src_lengths, winners, side='x2y', weight=weight)
+                loss_y2x, stat_dict_y2x = self.get_loss_stats(
+                    tgt, src, tgt_lengths, winners, side='y2x', weight=weight)
+                loss = loss_x2y + loss_y2x
+
             self.optim.backward(loss)
             stats = onmt.utils.Statistics(self.num_experts, 
                                           loss=loss.item(),
@@ -622,3 +647,22 @@ class Trainer(object):
         if self.source_noise is not None:
             return self.source_noise(batch)
         return batch
+
+
+class LogSumExpMoE(torch.autograd.Function):
+    """Standard LogSumExp forward pass, but use *posterior* for the backward.
+    See `"Mixture Models for Diverse Machine Translation: Tricks of the Trade"
+    (Shen et al., 2019) <https://arxiv.org/abs/1902.07816>`_.
+    """
+
+    @staticmethod
+    def forward(ctx, logp, posterior, dim=-1):
+        ctx.save_for_backward(posterior)
+        ctx.dim = dim
+        return torch.logsumexp(logp, dim=dim)
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        posterior, = ctx.saved_tensors
+        grad_logp = grad_output.unsqueeze(ctx.dim) * posterior
+        return grad_logp, None, None
