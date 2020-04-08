@@ -416,7 +416,7 @@ class Trainer(object):
             reduced_sum=True, weight=weight)
         
         # add prior loss to the loss above, if available
-        if self.learned_prior:
+        if self.learned_prior and side == 'x2y':
             ### excluding logsumexp
             # lprob_z = prior(mem, xlen)  # -> B x K
             lprob_z = self.model.prior(mem.detach(), xlen)  # -> B x K
@@ -481,17 +481,15 @@ class Trainer(object):
             lprob_y = self._get_lprob_y(
                 dec_in, target, enc, mem, x, xlen, side=side)  # -> B
 
-        lprob_yz = lprob_y
+        lprob_z = 0
         if self.learned_prior and side == 'x2y':
             # lprob_z = prior(mem, xlen) # -> B x K
             lprob_z = self.model.prior(mem.detach(), xlen) # -> B x K
             
             if winners is not None:
                 lprob_z = lprob_yz.gather(dim=-1, index=winners.unsqueeze(-1))
-            
-            lprob_yz += lprob_z
                 
-        return lprob_yz
+        return lprob_y, lprob_z
 
     def _gradient_accumulation(self, true_batches, normalization_x2y, 
                                normalization_y2x, total_stats, report_stats):
@@ -515,8 +513,9 @@ class Trainer(object):
             # compute responsibilities r = p(z|x,y)
             self.model.eval()
             with torch.no_grad():
-                lprob_yz = self.get_lprob_yz_x(
+                lprob_y, lprob_z = self.get_lprob_yz_x(
                     src, tgt, src_lengths, side='x2y')  # B x K
+                lprob_yz = lprob_y + lprob_z
                 rz = torch.nn.functional.softmax(lprob_yz, dim=1) # posterior!
             self.model.train()
 
@@ -526,9 +525,9 @@ class Trainer(object):
             if self.soft_selection:
                 lprob_y, lprob_z = self.get_lprob_yz_x(
                     src, tgt, src_lengths, side='x2y')  # B x K
-                lprob_x = self.get_lprob_yz_x(
+                lprob_x, _ = self.get_lprob_yz_x(
                     tgt, src, tgt_lengths, side='y2x')  # B x K
-                lprob_z = rz * (lprob_yz + lprob_x)     # B x K
+                lprob = rz * (lprob_y + lprob_x + lprob_z)     # B x K
                 loss_z = -lprob_z.sum(dim=-1)
                 stat_dict_x2y = {
                     'loss_x2y': loss_yz.item(),
