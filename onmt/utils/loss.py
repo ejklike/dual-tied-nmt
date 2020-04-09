@@ -281,8 +281,7 @@ class NMTLossCompute(LossComputeBase):
         num_non_padding = non_padding.sum().item()
         return num_correct, num_non_padding
 
-    def compute_loss(self, output, target, reduced_sum=False, get_stat=False, 
-                     weight=None):
+    def compute_loss(self, output, target, reduced_sum=False, get_stat=False):
         seqlen, batch_size, _ = output.size()
         bottled_output = self._bottle(output)
 
@@ -291,15 +290,10 @@ class NMTLossCompute(LossComputeBase):
 
         loss = self.criterion(scores, gtruth)
 
-        loss = loss.view([seqlen, batch_size]).sum(dim=0)
-        if weight is not None:
-            loss = WeightedSum.apply(loss, weight)
-
         if reduced_sum:
             loss = loss.sum()
 
-        if get_stat:
-            # calculate stats
+        if get_stat: # calculate stats
             num_correct, n_words = self.get_count(scores, gtruth)
             return loss, num_correct, n_words
         return loss
@@ -406,22 +400,3 @@ def shards(state, shard_size, eval_only=False):
                                      [v_chunk.grad for v_chunk in v_split]))
         inputs, grads = zip(*variables)
         torch.autograd.backward(inputs, grads)
-
-
-
-class WeightedSum(torch.autograd.Function):
-    """Standard LogSumExp forward pass, but use *posterior* for the backward.
-    See `"Mixture Models for Diverse Machine Translation: Tricks of the Trade"
-    (Shen et al., 2019) <https://arxiv.org/abs/1902.07816>`_.
-    """
-
-    @staticmethod
-    def forward(ctx, logp, weight, dim=-1):
-        ctx.save_for_backward(weight)
-        return logp #torch.sum(logp, dim=dim)
-
-    @staticmethod
-    def backward(ctx, grad_output):
-        weight, = ctx.saved_tensors
-        grad_logp = grad_output * weight
-        return grad_logp, None, None

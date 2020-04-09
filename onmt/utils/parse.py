@@ -29,24 +29,21 @@ class ArgumentParser(cfargparse.ArgumentParser):
 
     @classmethod
     def update_model_opts(cls, model_opt):
-        # if model_opt.method == 'sMoElp':
-        #     # soft MoE with learned prior
-        #     model_opt.uniform_prior = False
-        #     model_opt.hard_selection = False
-        # elif model_opt.method == 'sMoEup':
-        #     # soft MoE with uniform prior
-        #     model_opt.uniform_prior = True
-        #     model_opt.hard_selection = False
-        # elif model_opt.method == 'hMoElp':
-        #     # hard MoE with learned prior
-        #     model_opt.uniform_prior = False
-        #     model_opt.hard_selection = True
-        # elif model_opt.method == 'hMoEup':
-        #     # hard MoE with uniform prior
-        #     model_opt.uniform_prior = True
-        #     model_opt.hard_selection = True
-        # if model_opt.method == 'dual':
-        #     model_opt.uniform_prior = True
+        if model_opt.method == 'noem_lp':
+            model_opt.learned_prior= True
+            model_opt.noem = True
+        elif model_opt.method == 'noem_up':
+            model_opt.learned_prior= False
+            model_opt.noem = True
+        elif model_opt.method == 'em_lp':
+            model_opt.learned_prior= True
+            model_opt.noem = False
+        elif model_opt.method == 'em_up':
+            model_opt.learned_prior= False
+            model_opt.noem = False
+        elif model_opt.method == 'base':
+            model_opt.learned_prior= False
+            model_opt.noem = True
 
         if model_opt.word_vec_size > 0:
             model_opt.src_word_vec_size = model_opt.word_vec_size

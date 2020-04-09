@@ -22,20 +22,12 @@ def model_opts(parser):
     """
     # MoE
     group = parser.add_argument_group('Custom')
-#     group.add('--method', '-method', default='hMoEup',
-#               choices=['dual', 'sMoElp', 'sMoEup', 'hMoElp', 'hMoEup'])
+    group.add('--method', '-method', default='noem_lp',
+              choices=['noem_lp', 'noem_up', 'em_lp', 'em_up', 'base'])
     group.add('--num_experts', '-num_experts', default=3, type=int, 
               metavar='N', help='number of experts')
     group.add('--tied', '-tied', action='store_true',
               help='parameter tying btw enc & dec')
-    group.add('--learned_prior', '-learned_prior', action='store_true',
-              help='learned prior')
-    group.add('--sampling_z', '-sampling_z', action='store_true',
-              help='sampling_z')
-    group.add('--soft_selection', '-soft_selection', action='store_true',
-              help='soft_selection')
-    group.add('--weighted_grad', '-weighted_grad', action='store_true',
-              help='soft_selection')
 
     # Embedding Options
     group = parser.add_argument_group('Model-Embeddings')
