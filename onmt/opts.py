@@ -23,7 +23,8 @@ def model_opts(parser):
     # MoE
     group = parser.add_argument_group('Custom')
     group.add('--method', '-method', default='noem_lp',
-              choices=['noem_lp', 'noem_up', 'em_lp', 'em_up', 'base'])
+              choices=['noem_lp', 'noem_up', 'em_lp', 'em_up', 'base', 
+                       'hard_lp', 'hard_up'])
     group.add('--num_experts', '-num_experts', default=3, type=int, 
               metavar='N', help='number of experts')
     group.add('--tied', '-tied', action='store_true',
