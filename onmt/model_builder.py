@@ -211,7 +211,7 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
             gen_func
         )
         if model_opt.share_decoder_embeddings:
-            generator[0].weight = decoder.embeddings.word_lut.weight
+            generator[0].weight = decoder_x2y.embeddings.word_lut.weight
     else:
         tgt_base_field = fields["tgt"].base_field
         vocab_size = len(tgt_base_field.vocab)
