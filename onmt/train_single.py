@@ -62,13 +62,14 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
         vocab = torch.load(opt.data + '.vocab.pt')
 
         # add indicator tokens for each expert
-        for i in range(opt.num_experts):
-            # add to both dictionaries in case we're sharing embeddings
-            # assume shared vocab
-            vocab['src'].base_field.vocab.itos.append('<expert_{}>'.format(i))
-            vocab['src'].base_field.vocab.stoi.update(
-                {tok: i for i, tok in enumerate(
-                    vocab['src'].base_field.vocab.itos)})
+        if opt.num_experts > 1:
+            for i in range(opt.num_experts):
+                # add to both dictionaries in case we're sharing embeddings
+                # assume shared vocab
+                vocab['src'].base_field.vocab.itos.append('<expert_{}>'.format(i))
+                vocab['src'].base_field.vocab.stoi.update(
+                    {tok: i for i, tok in enumerate(
+                        vocab['src'].base_field.vocab.itos)})
 
     # check for code where vocab is saved instead of fields
     # (in the future this will be done in a smarter way)
@@ -82,6 +83,7 @@ def main(opt, device_id, batch_queue=None, semaphore=None):
     patch_fields(opt, fields)
 
     # Report src and tgt vocab sizes, including for features
+    logger.info(' * num_experts: %d' % opt.num_experts)
     for side in ['src', 'tgt']:
         f = fields[side]
         try:
