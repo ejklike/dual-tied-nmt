@@ -170,7 +170,8 @@ class ReportMgr(ReportMgrBase):
             self.log('Validation accuracy: %g,; %g' 
                      % (valid_stats.accuracy('x2y'), 
                         valid_stats.accuracy('y2x')))
-            self.log('Validation posterior: %s' % valid_stats.posterior_str())
+            if valid_stats.num_experts > 1:
+                self.log('Validation latents: %s' % valid_stats.dist_z())
 
             self.maybe_log_tensorboard(valid_stats,
                                        "valid",
