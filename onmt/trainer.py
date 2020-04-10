@@ -95,6 +95,7 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            num_experts=opt.num_experts,
                            learned_prior=opt.learned_prior,
                            noem=opt.noem,
+                           hard_selection=opt.hard_selection,
                            tgt_fields=tgt_field)
     return trainer
 
@@ -134,7 +135,7 @@ class Trainer(object):
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
                  source_noise=None, num_experts=1, learned_prior=False, 
-                 noem=False, tgt_fields=None):
+                 noem=False, hard_selection=False, tgt_fields=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -163,6 +164,7 @@ class Trainer(object):
         self.num_experts = num_experts
         self.learned_prior = learned_prior
         self.noem = noem
+        self.hard_selection = hard_selection
         self.tgt_fields = tgt_fields
 
         for i in range(len(self.accum_count_l)):
@@ -350,30 +352,25 @@ class Trainer(object):
                 src, src_lengths = batch.src
                 tgt, tgt_lengths = batch.tgt
 
-                # get rz
-                lprob_y, lprob_z = self.get_lprob_yz_x(
-                    src, tgt, src_lengths, side='x2y')  # B x K
-                lprob_x, _ = self.get_lprob_yz_x(
-                    tgt, src, tgt_lengths, side='y2x')  # B x K
-                lprob = lprob_x + lprob_y + lprob_z
-                rz = torch.nn.functional.softmax(lprob, dim=1)
+                # feed-forward
+                loss_y, n_words_y, n_correct_y, loss_z = self.get_loss_stats(
+                    src, tgt, src_lengths, side='x2y') # B x K
+                loss_x, n_words_x, n_correct_x, _ = self.get_loss_stats(
+                    tgt, src, tgt_lengths, side='y2x') # B x K
+                loss = loss_x + loss_y + loss_z # B x K
 
-                winners = rz.max(dim=1)[1]  # B
-
-                # get x2y stats
-                loss_x2y, stat_dict_x2y = self.get_loss_stats(
-                    src, tgt, src_lengths, winners, side='x2y')
-                # get y2x stats
-                loss_y2x, stat_dict_y2x = self.get_loss_stats(
-                    tgt, src, tgt_lengths, winners, side='y2x')
-                
-                # one_hot winner
-                one_hot_winners = (winners.view(-1, 1).cpu() 
-                    == torch.arange(self.num_experts)
-                       .reshape(1, self.num_experts)).float()
-                rz = one_hot_winners.sum(dim=0).numpy()
+                # get winner
+                winners = loss.min(dim=1)[1] # B
+    
+                # get loss and stats of winners
+                loss_x2y, stat_dict_x2y = self.get_winners_results(
+                    winners, loss_x, n_words_x, n_correct_x, side='x2y')
+                loss_y2x, stat_dict_y2x = self.get_winners_results(
+                    winners, loss_y, n_words_y, n_correct_y, side='y2x')
+                loss = loss_z + loss_x2y + loss_y2x
 
                 # batch stats
+                rz = self.get_one_hot_winners(winners).sum(dim=0).numpy()
                 batch_stats_x2y = onmt.utils.Statistics(
                     self.num_experts, loss=loss_x2y.item(),
                     r=rz, **stat_dict_x2y)
@@ -396,12 +393,34 @@ class Trainer(object):
         return stats
     
     def expert_index(self, i):
-        return i + self.tgt_fields.vocab.stoi['<expert_0>']
+        if self.num_experts > 1:
+            return i + self.tgt_field.vocab.stoi['<expert_0>']
+        else:
+            return self.tgt_field.vocab.stoi[self.tgt_field.init_token]
+
+    def get_one_hot_winners(self, winners):
+        one_hot_winners = (winners.view(-1, 1).cpu() 
+            == torch.arange(self.num_experts)
+               .reshape(1, self.num_experts)).float() # B x K
+        return one_hot_winners
 
     def get_dec_in(self, dec_in, winners):
         dec_in_ = dec_in.clone()
         dec_in_[0, :, 0] = self.expert_index(winners)
         return dec_in_
+
+    def get_winners_results(self, winners, loss_t, n_words_t, n_correct_t, 
+                            side='x2y'):
+        winners_index = winners.unsqueeze(-1)
+        loss = loss_t.gather(dim=-1, index=winners_index).sum()
+        n_words = n_words_t.gather(dim=-1, index=winners_index)
+        n_correct = n_correct_t.gather(dim=-1, index=winners_index)
+        # assert n_words.sum().item() == (tgt_lengths - 1).sum().item(), (n_words.sum().item(), (tgt_lengths - 1).sum().item())
+        stat_dict = {
+            'loss_%s' %side: loss.item(),
+            'n_correct_%s' %side: n_correct.sum().item(),
+            'n_words_%s' %side: n_words.sum().item()}
+        return loss, stat_dict
 
     def get_loss_stats(self, x, y, xlen, winners, side='x2y'):
         """get log p(y,z|x) tensor
@@ -416,6 +435,40 @@ class Trainer(object):
             dec_in, target, enc, mem, x, xlen, side=side, reduced_sum=True)
 
         return loss, stat_dict
+
+    def get_loss_stats(self, x, y, xlen, side='x2y'):
+        """get log p(y|x,z) tensor"""
+
+        enc, mem, _ = self.model.encoder(x, xlen)
+        input_, target = y[:-1], y[1:]
+
+        # init decoder
+        decoder = (self.model.decoder_x2y if side == 'x2y' else 
+                    self.model.decoder_y2x)
+
+        loss_y = []
+        n_words_y = []
+        n_correct_y = []
+        for i in range(self.num_experts):
+            decoder.init_state(x, enc, mem)
+            dec_in = self.get_dec_in(input_, i)
+            dec_out, _ = decoder(dec_in, mem, 
+                                 memory_lengths=xlen, 
+                                 with_align=self.with_align)
+            loss, n_correct, n_words = \
+                self.train_loss.compute_loss_v2(dec_out, target)
+            loss_y.append(loss)
+            n_words_y.append(n_words)
+            n_correct_y.append(n_correct)
+        loss_y = torch.stack(loss_y, dim=1)  # -> B x K
+        n_words_y = torch.stack(n_words_y, dim=1)  # -> B x K
+        n_correct_y = torch.stack(n_correct_y, dim=1)  # -> B x K
+
+        loss_z = 0
+        if self.learned_prior and side == 'x2y':
+            # lprob_z = self.model.prior(mem, xlen) # -> B x K
+            loss_z = - self.model.prior(mem.detach(), xlen) # -> B x K
+        return loss_y, n_words_y, n_correct_y, loss_z
 
     def _get_loss_y(self, dec_in, target, enc_state, memory_bank, 
                     x, lengths, side='x2y', reduced_sum=False):
@@ -494,33 +547,54 @@ class Trainer(object):
 
             # TODO: normaliztion? token? sents?
             # divide by word count??
-            
-            # p(x'|x,y) for each z.
-            lprob_y, lprob_z = self.get_lprob_yz_x(
-                src, tgt, src_lengths, side='x2y')  # B x K
-            lprob_x, _ = self.get_lprob_yz_x(
-                tgt, src, tgt_lengths, side='y2x')  # B x K
-            lprob = lprob_y + lprob_x + lprob_z  # B x K
-            
-            rz = torch.nn.functional.softmax(lprob.detach(), dim=1)
-            assert not rz.requires_grad
-            
-            # TODO: denominator?
-            # compute loss
-            if self.noem:
-                # In here, we minimize NLL of p(x'|x)
-                loss = -torch.logsumexp(lprob, dim=1).sum()
+
+            if self.hard_selection:
+                # get loss and stats 
+                loss_y, n_words_y, n_correct_y, loss_z = self.get_loss_stats(
+                    src, tgt, src_lengths, side='x2y') # B x K
+                loss_x, n_words_x, n_correct_x, _ = self.get_loss_stats(
+                    tgt, src, tgt_lengths, side='y2x') # B x K
+                loss = loss_x + loss_y + loss_z # B x K
+
+                # get winners
+                winners = loss.detach().min(dim=1)[1] # B
+                rz = self.get_one_hot_winners(winners)
+                assert not winners.requires_grad
+    
+                # get loss and stats of winners
+                winners_index = winners.unsqueeze(-1)
+                loss_z = loss_z.gather(dim=-1, index=winners_index).sum()
+                loss_x2y, stat_dict_x2y = self.get_winners_results(
+                    winners, loss_x, n_words_x, n_correct_x, side='x2y')
+                loss_y2x, stat_dict_y2x = self.get_winners_results(
+                    winners, loss_y, n_words_y, n_correct_y, side='y2x')
+                loss = loss_z + loss_x2y + loss_y2x
             else:
-                # In here, we use EM algorithm
-                # compute posterior r = p(z|x,y,x')
-                loss = - (rz * lprob).sum()
-            
-            stat_dict_x2y = {
-                'loss_x2y': -lprob_y.detach().sum().item(),
-                'n_words_x2y': (tgt_lengths - 1).sum().item()}
-            stat_dict_y2x = {
-                'loss_y2x': -lprob_x.detach().sum().item(),
-                'n_words_y2x': (src_lengths - 1).sum().item()}
+                # p(x'|x,y) for each z.
+                lprob_y, lprob_z = self.get_lprob_yz_x(
+                    src, tgt, src_lengths, side='x2y')  # B x K
+                lprob_x, _ = self.get_lprob_yz_x(
+                    tgt, src, tgt_lengths, side='y2x')  # B x K
+                lprob = lprob_z + lprob_y + lprob_x   # B x K
+
+                rz = torch.nn.functional.softmax(lprob.detach(), dim=1)
+                assert not rz.requires_grad
+
+                # compute loss
+                if self.noem:
+                    # In here, we minimize NLL of p(x'|x)
+                    loss = -torch.logsumexp(lprob, dim=1).sum()
+                else:
+                    # In here, we use EM algorithm
+                    # compute posterior r = p(z|x,y,x')
+                    loss = - (rz * lprob).sum()
+
+                stat_dict_x2y = {
+                    'loss_x2y': -lprob_y.detach().sum().item(),
+                    'n_words_x2y': (tgt_lengths - 1).sum().item()}
+                stat_dict_y2x = {
+                    'loss_y2x': -lprob_x.detach().sum().item(),
+                    'n_words_y2x': (src_lengths - 1).sum().item()}
 
             self.optim.backward(loss)
             stats = onmt.utils.Statistics(self.num_experts, 
