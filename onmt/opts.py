@@ -632,8 +632,8 @@ def train_opts(parser):
 
 def translate_opts(parser):
     """ Translation / inference options """
-    group = parser.add_argument_group('MoE-alpha')
-    group.add('--num_experts', '-num_experts', default=3, type=int, 
+    group = parser.add_argument_group('Custom')
+    group.add('--num_experts', '-num_experts', default=1, type=int, 
               metavar='N', help='number of experts')
 
     group = parser.add_argument_group('Model')
