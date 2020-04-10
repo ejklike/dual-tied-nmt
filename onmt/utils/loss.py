@@ -215,7 +215,7 @@ class LabelSmoothingLoss(nn.Module):
         model_prob.scatter_(1, target.unsqueeze(1), self.confidence)
         model_prob.masked_fill_((target == self.ignore_index).unsqueeze(1), 0)
 
-        return F.kl_div(output, model_prob, reduction='sum')
+        return F.kl_div(output, model_prob, reduction='none')
 
 
 class NMTLossCompute(LossComputeBase):
@@ -277,9 +277,14 @@ class NMTLossCompute(LossComputeBase):
     def get_count(self, scores, gtruth):
         pred = scores.max(1)[1]
         non_padding = gtruth.ne(self.padding_idx)
-        num_correct = pred.eq(gtruth).masked_select(non_padding).sum().item()
-        num_non_padding = non_padding.sum().item()
-        return num_correct, num_non_padding
+        correct = pred.eq(gtruth) * non_padding
+        
+        if reduced_sum:
+            num_correct = correct.sum().item()
+            num_non_padding = non_padding.sum().item()
+            return num_correct, num_non_padding
+        else:
+            return correct, non_padding
 
     def compute_loss(self, output, target, reduced_sum=False, get_stat=False):
         seqlen, batch_size, _ = output.size()
