@@ -93,7 +93,8 @@ class Statistics(object):
         """
         assert self.num_experts == stat.num_experts, (self.num_experts,  stat.num_experts)
         self.loss += stat.loss
-        self.r += stat.r
+        if stat.r is not None:
+            self.r += stat.r
 
         self.loss_x2y += stat.loss_x2y
         self.loss_y2x += stat.loss_y2x
@@ -107,9 +108,11 @@ class Statistics(object):
             self.n_src_words += stat.n_src_words
             self.n_tgt_words += stat.n_tgt_words
 
-    def posterior_str(self):
+    def dist_z(self):
         r_norm = self.r / self.r.sum()
-        return '(' + ', '.join(['%.1f' % r for r in r_norm]) + ')'
+        if self.r.sum() > 0:
+            return '(' + ', '.join(['%.1f' % r for r in r_norm]) + ')'
+        return ''
         
     def accuracy(self, side):
         """ compute accuracy """
@@ -155,8 +158,8 @@ class Statistics(object):
         if num_steps > 0:
             step_fmt = "%s/%5d" % (step_fmt, num_steps)
         logger.info(
-            "Step %s; lr: %7.5f; posterior: %s; %6.0f sec;"
-            % (step_fmt, learning_rate, self.posterior_str(), 
+            "Step %s; lr: %7.5f; dist: %s; %6.0f sec;"
+            % (step_fmt, learning_rate, self.dist_z(), 
                time.time() - start))
         logger.info(
             "[FWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f/%3.0f tok/s"
