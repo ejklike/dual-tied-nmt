@@ -404,10 +404,9 @@ class Trainer(object):
                .reshape(1, self.num_experts)).float() # B x K
         return one_hot_winners
 
-    def get_dec_in(self, dec_in, winners, side='x2y'):
+    def get_dec_in(self, dec_in, winners):
         dec_in_ = dec_in.clone()
-        if side == 'x2y':
-            dec_in_[0, :, 0] = self.expert_index(winners)
+        dec_in_[0, :, 0] = self.expert_index(winners)
         return dec_in_
 
     def get_winners_results(self, winners, loss_t, n_words_t, n_correct_t, 
