@@ -96,7 +96,7 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            learned_prior=opt.learned_prior,
                            noem=opt.noem,
                            hard_selection=opt.hard_selection,
-                           tgt_fields=tgt_field)
+                           tgt_field=tgt_field)
     return trainer
 
 
@@ -135,7 +135,7 @@ class Trainer(object):
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
                  source_noise=None, num_experts=1, learned_prior=False, 
-                 noem=False, hard_selection=False, tgt_fields=None):
+                 noem=False, hard_selection=False, tgt_field=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -165,7 +165,7 @@ class Trainer(object):
         self.learned_prior = learned_prior
         self.noem = noem
         self.hard_selection = hard_selection
-        self.tgt_fields = tgt_fields
+        self.tgt_field = tgt_field
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -404,9 +404,10 @@ class Trainer(object):
                .reshape(1, self.num_experts)).float() # B x K
         return one_hot_winners
 
-    def get_dec_in(self, dec_in, winners):
+    def get_dec_in(self, dec_in, winners, side='x2y'):
         dec_in_ = dec_in.clone()
-        dec_in_[0, :, 0] = self.expert_index(winners)
+        if side == 'x2y':
+            dec_in_[0, :, 0] = self.expert_index(winners)
         return dec_in_
 
     def get_winners_results(self, winners, loss_t, n_words_t, n_correct_t, 
@@ -415,7 +416,6 @@ class Trainer(object):
         loss = loss_t.gather(dim=-1, index=winners_index).sum()
         n_words = n_words_t.gather(dim=-1, index=winners_index)
         n_correct = n_correct_t.gather(dim=-1, index=winners_index)
-        # assert n_words.sum().item() == (tgt_lengths - 1).sum().item(), (n_words.sum().item(), (tgt_lengths - 1).sum().item())
         stat_dict = {
             'loss_%s' %side: loss.item(),
             'n_correct_%s' %side: n_correct.sum().item(),

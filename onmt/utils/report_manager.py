@@ -23,7 +23,7 @@ def build_report_manager(opt, gpu_rank):
 
     record_dir = None
     if gpu_rank == 0:
-        record_dir = os.path.dirname(opt.save_model)        
+        record_dir = opt.save_dir
 
     report_mgr = ReportMgr(opt.report_every, num_experts=opt.num_experts, 
                            start_time=-1, tensorboard_writer=writer,

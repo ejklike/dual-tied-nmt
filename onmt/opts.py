@@ -615,6 +615,9 @@ def train_opts(parser):
               type=str, default="runs/onmt",
               help="Log directory for Tensorboard. "
                    "This is also the name of the run.")
+    group.add("--save_dir", "-save_dir",
+              type=str, default="onmt-runs/",
+              help="Log directory for records.")
 
     group = parser.add_argument_group('Speech')
     # Options most relevant to speech

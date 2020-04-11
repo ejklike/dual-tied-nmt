@@ -215,7 +215,7 @@ class LabelSmoothingLoss(nn.Module):
         model_prob.scatter_(1, target.unsqueeze(1), self.confidence)
         model_prob.masked_fill_((target == self.ignore_index).unsqueeze(1), 0)
 
-        return F.kl_div(output, model_prob, reduction='none')
+        return F.kl_div(output, model_prob, reduction='none').sum(dim=-1)
 
 
 class NMTLossCompute(LossComputeBase):
@@ -274,7 +274,7 @@ class NMTLossCompute(LossComputeBase):
             })
         return shard_state
 
-    def get_count(self, scores, gtruth):
+    def get_count(self, scores, gtruth, reduced_sum=True):
         pred = scores.max(1)[1]
         non_padding = gtruth.ne(self.padding_idx)
         correct = pred.eq(gtruth) * non_padding
