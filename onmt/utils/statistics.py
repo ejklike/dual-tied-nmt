@@ -113,7 +113,7 @@ class Statistics(object):
         if self.r.sum() > 0:
             r_norm = self.r.cpu().numpy()
             r_norm /= r_norm.sum()
-            return '(' + ', '.join(['%.1f' % r for r in r_norm]) + ')'
+            return '(' + ', '.join(['%.2f' % r for r in r_norm]) + ')'
         return ''
         
     def accuracy(self, side):
