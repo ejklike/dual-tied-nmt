@@ -3,7 +3,7 @@ from __future__ import division
 import time
 import math
 import sys
-import numpy as np
+import torch
 
 from onmt.utils.logging import logger
 
@@ -21,9 +21,10 @@ class Statistics(object):
     def __init__(self, num_experts, loss=0, r=None,
                  loss_x2y=0, loss_y2x=0, loss_moe=0,
                  n_words_x2y=0, n_words_y2x=0, 
-                 n_correct_x2y=0, n_correct_y2x=0):
+                 n_correct_x2y=0, n_correct_y2x=0,
+                 device="cuda"):
         self.num_experts = num_experts
-        self.r = np.zeros(num_experts) if r is None else r
+        self.r = torch.zeros(num_experts, device=device) if r is None else r
         self.loss = loss
 
         self.loss_x2y = loss_x2y
@@ -109,8 +110,9 @@ class Statistics(object):
             self.n_tgt_words += stat.n_tgt_words
 
     def dist_z(self):
-        r_norm = self.r / self.r.sum()
         if self.r.sum() > 0:
+            r_norm = self.r.cpu().numpy()
+            r_norm /= r_norm.sum()
             return '(' + ', '.join(['%.1f' % r for r in r_norm]) + ')'
         return ''
         
