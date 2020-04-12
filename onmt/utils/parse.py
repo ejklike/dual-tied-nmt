@@ -29,18 +29,6 @@ class ArgumentParser(cfargparse.ArgumentParser):
 
     @classmethod
     def update_model_opts(cls, model_opt):
-        # if model_opt.method == 'noem_lp':
-        #     model_opt.learned_prior= True
-        #     model_opt.hard_selection = False
-        # elif model_opt.method == 'noem_up':
-        #     model_opt.learned_prior= False
-        #     model_opt.hard_selection = False
-        # elif model_opt.method == 'em_lp':
-        #     model_opt.learned_prior= True
-        #     model_opt.hard_selection = False
-        # elif model_opt.method == 'em_up':
-        #     model_opt.learned_prior= False
-        #     model_opt.hard_selection = False
         if model_opt.method == 'hard_lp':
             model_opt.learned_prior= True
             model_opt.hard_selection = True
