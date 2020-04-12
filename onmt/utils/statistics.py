@@ -160,18 +160,16 @@ class Statistics(object):
         if num_steps > 0:
             step_fmt = "%s/%5d" % (step_fmt, num_steps)
         logger.info(
-            "Step %s; lr: %7.5f; dist: %s; %6.0f sec;"
+            "Step %s; lr: %7.10f; dist: %s; %6.0f sec;"
             % (step_fmt, learning_rate, self.dist_z(), 
                time.time() - start))
         logger.info(
-            "[FWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f/%3.0f tok/s"
+            "[FWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f tok/s"
             % (self.accuracy('x2y'), self.ppl('x2y'), self.xent('x2y'),
-               (self.n_src_words) / (t + 1e-5),
                (self.n_words_x2y) / (t + 1e-5)))
         logger.info(
-            "[BWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f/%3.0f tok/s"
-            % (self.accuracy('y2x'), self.ppl('y2x'), self.xent('y2x'),
-               (self.n_tgt_words) / (t + 1e-5),
+            "[BWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f tok/s"
+            % (self.accuracy('y2x'), self.ppl('y2x'), self.xent('y2x')
                (self.n_words_y2x) / (t + 1e-5)))
         sys.stdout.flush()
 

@@ -274,36 +274,8 @@ class NMTLossCompute(LossComputeBase):
             })
         return shard_state
 
-    def get_count(self, scores, gtruth, reduced_sum=True):
-        pred = scores.max(1)[1]
-        non_padding = gtruth.ne(self.padding_idx)
-        correct = pred.eq(gtruth) * non_padding
-        
-        if reduced_sum:
-            num_correct = correct.sum().item()
-            num_non_padding = non_padding.sum().item()
-            return num_correct, num_non_padding
-        else:
-            return correct, non_padding
-
-    def compute_loss_v2(self, output, target):
-        seqlen, batch_size, _ = output.size()
-        bottled_output = self._bottle(output)
-
-        scores = self.generator(bottled_output)
-        gtruth = target.view(-1)
-
-        # calculate loss
-        loss = self.criterion(scores, gtruth)
-        loss = loss.view(seqlen, batch_size).sum(dim=0)
-
-        # calculate stats
-        correct, valid_word = self.get_count(scores, gtruth, reduced_sum=False)
-        num_correct = correct.view(-1, batch_size).sum(dim=0)
-        n_words = valid_word.view(-1, batch_size).sum(dim=0)
-        return loss, num_correct, n_words # B
-
-    def compute_loss(self, output, target, reduced_sum=False, get_stat=False):
+    def compute_loss(self, output, target, reduced_sum=False, 
+                     get_stat=False, side=None):
         seqlen, batch_size, _ = output.size()
         bottled_output = self._bottle(output)
 
@@ -315,12 +287,20 @@ class NMTLossCompute(LossComputeBase):
         if reduced_sum:
             loss = loss.sum()
 
-        if get_stat: 
-            # calculate stats
-            num_correct, n_words = self.get_count(
-                scores, gtruth, reduced_sum=True)
-            return loss, num_correct, n_words
-        return loss
+        stat_dict = None
+        if get_stat:
+            stat_dict = self.get_stat(loss, scores, gtruth, side=side)
+        return loss, stat_dict
+
+    def get_stat(self, loss, scores, gtruth, side=None):
+        assert side is not None
+        pred = scores.max(1)[1]
+        non_padding = gtruth.ne(self.padding_idx)
+        correct = pred.eq(gtruth) * non_padding
+        return {
+            'loss_%s' %side: loss.sum().item(),
+            'n_correct_%s' %side: correct.sum().item(),
+            'n_words_%s' %side: non_padding.sum().item()}
 
     def _compute_loss(self, output, target, std_attn=None, 
                       coverage_attn=None, align_head=None, ref_align=None,
