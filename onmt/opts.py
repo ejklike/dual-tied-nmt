@@ -20,7 +20,6 @@ def model_opts(parser):
     These options are passed to the construction of the model.
     Be careful with these as they will be used during translation.
     """
-    # MoE
     group = parser.add_argument_group('Custom')
     group.add('--method', '-method', default='noem_lp',
               choices=['soft_lp', 'soft_up', 'hard_lp', 'hard_up', 'base'])

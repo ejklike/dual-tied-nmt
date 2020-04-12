@@ -366,8 +366,7 @@ class Trainer(object):
     def expert_index(self, i):
         if self.num_experts > 1:
             return i + self.tgt_field.vocab.stoi['<expert_0>']
-        else:
-            return self.tgt_field.vocab.stoi[self.tgt_field.init_token]
+        return self.tgt_field.vocab.stoi[self.tgt_field.init_token]
 
     def get_one_hot_winners(self, winners):
         one_hot_winners = (winners.view(-1, 1) 

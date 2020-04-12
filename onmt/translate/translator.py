@@ -135,9 +135,11 @@ class Translator(object):
             report_score=True,
             logger=None,
             log_score=False,
-            seed=-1):
+            seed=-1,
+            num_experts=1):
         self.expert_id = None
         self.log_score = log_score
+        self.num_experts = num_experts
 
         self.model = model
         self.fields = fields
@@ -271,7 +273,8 @@ class Translator(object):
             report_score=report_score,
             logger=logger,
             seed=opt.seed,
-            log_score=log_score)
+            log_score=log_score,
+            num_experts=opt.num_experts)
 
     def _log(self, msg):
         if self.logger:
@@ -653,7 +656,9 @@ class Translator(object):
         return log_probs, attn
 
     def expert_index(self, i):
-        return i + self._tgt_vocab.stoi['<expert_0>']
+        if self.num_experts > 1:
+            return i + self._tgt_vocab.stoi['<expert_0>']
+        return self._tgt_bos_idx
 
     def _translate_batch_with_strategy(
             self,
