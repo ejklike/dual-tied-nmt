@@ -19,7 +19,7 @@ class Statistics(object):
     """
 
     def __init__(self, num_experts, loss=0, r=None,
-                 loss_x2y=0, loss_y2x=0, loss_moe=0,
+                 loss_x2y=0, loss_y2x=0, 
                  n_words_x2y=0, n_words_y2x=0, 
                  n_correct_x2y=0, n_correct_y2x=0,
                  device="cuda"):
@@ -29,7 +29,6 @@ class Statistics(object):
 
         self.loss_x2y = loss_x2y
         self.loss_y2x = loss_y2x
-        self.loss_moe = loss_moe
         self.n_words_x2y = n_words_x2y
         self.n_words_y2x = n_words_y2x
         self.n_correct_x2y = n_correct_x2y
@@ -95,7 +94,6 @@ class Statistics(object):
 
         self.loss_x2y += stat.loss_x2y
         self.loss_y2x += stat.loss_y2x
-        self.loss_moe += stat.loss_moe
         self.n_words_x2y += stat.n_words_x2y
         self.n_words_y2x += stat.n_words_y2x
         self.n_correct_x2y += stat.n_correct_x2y
