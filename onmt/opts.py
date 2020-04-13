@@ -21,8 +21,8 @@ def model_opts(parser):
     Be careful with these as they will be used during translation.
     """
     group = parser.add_argument_group('Custom')
-    group.add('--method', '-method', default='noem_lp',
-              choices=['soft_lp', 'soft_up', 'hard_lp', 'hard_up', 'base'])
+    group.add('--method', '-method', default='hard_lp',
+              choices=['soft_lp', 'soft_up', 'hard_lp', 'hard_up', 'base', 'base_oneway'])
     group.add('--num_experts', '-num_experts', default=3, type=int, 
               metavar='N', help='number of experts')
     group.add('--tied', '-tied', action='store_true',
