@@ -94,7 +94,7 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            source_noise=source_noise,
                            num_experts=opt.num_experts,
                            learned_prior=opt.learned_prior,
-                           noem=opt.noem,
+                           twoway=opt.twoway,
                            hard_selection=opt.hard_selection,
                            tgt_field=tgt_field)
     return trainer
@@ -135,7 +135,7 @@ class Trainer(object):
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
                  source_noise=None, num_experts=1, learned_prior=False, 
-                 noem=False, hard_selection=False, tgt_field=None):
+                 hard_selection=False, twoway=True, tgt_field=None):
         # Basic attributes.
         self.model = model
         self.train_loss = train_loss
@@ -161,11 +161,15 @@ class Trainer(object):
         self.dropout = dropout
         self.dropout_steps = dropout_steps
         self.source_noise = source_noise
+        
         self.num_experts = num_experts
         self.learned_prior = learned_prior
-        self.noem = noem
         self.hard_selection = hard_selection
+        self.twoway = twoway
         self.tgt_field = tgt_field
+        
+        self.get_loss_stats = (self._get_loss if self.num_experts > 1 else 
+                               self._get_loss_with_no_expert)
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -350,7 +354,7 @@ class Trainer(object):
 
             for batch in valid_iter:
                 valid_loss, valid_stats = \
-                    self._get_loss(batch, validation=True)
+                    self.get_loss_stats(batch, validation=True)
                 stats.update(valid_stats)
 
         if moving_average:
@@ -376,7 +380,8 @@ class Trainer(object):
 
     def get_dec_in(self, dec_in, winners):
         dec_in_ = dec_in.clone()
-        dec_in_[0, :, 0] = self.expert_index(winners)
+        if self.num_experts > 1 and winners is not None:
+            dec_in_[0, :, 0] = self.expert_index(winners)
         return dec_in_
 
     def _get_loss(self, batch, validation=False):
@@ -486,6 +491,49 @@ class Trainer(object):
                                       **stat_dict_y2x)
         return loss, stats
 
+    def _get_loss_with_no_expert(self, batch, validation=False):
+        src, src_lengths = batch.src
+        tgt, tgt_lengths = batch.tgt
+
+        bsz = src_lengths.size(0)
+
+        def _get_lprob_y(dec_out, target, side=None):
+            loss, stat_dict = self.train_loss.compute_loss(
+                dec_out, target, reduced_sum=True, get_stat=True, side=side)
+            lprob = -loss
+            return lprob, stat_dict
+            
+        def get_lprob(side='x2y'):
+            x, xlen, y, decoder = {
+                'x2y': (src, src_lengths, tgt, self.model.decoder_x2y),
+                'y2x': (tgt, tgt_lengths, src, self.model.decoder_y2x)
+            }[side]
+            
+            enc, mem, _ = self.model.encoder(x, xlen)
+            input_, target = y[:-1], y[1:]
+
+            decoder.init_state(x, enc, mem)
+            dec_in = self.get_dec_in(input_)
+            dec_out, _ = decoder(dec_in, mem, 
+                memory_lengths=xlen, with_align=self.with_align)
+            lprob_y, stat_dict = _get_lprob_y(dec_out, target, side=side)
+
+            return lprob_y, stat_dict
+
+        lprob_y, stat_dict_x2y = get_lprob(side='x2y') # B x K
+        loss = -lprob_y
+
+        stat_dict_y2x = {}
+        if self.twoway:
+            lprob_x, stat_dict_y2x = get_lprob(side='y2x') # B x K
+            loss += -lprob_x
+
+        stats = onmt.utils.Statistics(self.num_experts, 
+                                      loss=loss.item(),
+                                      **stat_dict_x2y,
+                                      **stat_dict_y2x)
+        return loss, stats
+    
     def _gradient_accumulation(self, true_batches, normalization_x2y, 
                                normalization_y2x, total_stats, report_stats):
         if self.accum_count > 1:
@@ -499,7 +547,7 @@ class Trainer(object):
                 self.optim.zero_grad()
 
             # gradient accumulation
-            loss, stats = self._get_loss(batch)
+            loss, stats = self.get_loss_stats(batch)
             self.optim.backward(loss)
 
             # update stats
