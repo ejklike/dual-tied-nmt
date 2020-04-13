@@ -2,40 +2,78 @@
 
 ONMT="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
-if [[ ! -z $1 ]]; then
-    STEP=$1
+#======= USER INPUT CONFIGURATION ======
+if [ $# -eq 0 ]; then
+    echo "No arguments supplied."
+    exit
 fi
+USE_BSUB=$1
+NGPU=$2
+JOBTYPE=$3
+INHOUSE=$4
 
 #======= EXPERIMENT INPUT ======
-GPUARG="" # default
-GPUARG="0"
-
-TRAIN_FROM_ARGS=""
-
 BEAM=10
-TEST_BATCH_SIZE=32
+TEST_BATCH_SIZE=256
+N_MODELS=1
 
 BATCH_SIZE=4096
 VALID_STEP=10000
 REPORT_EVERY=1000
 
-# BATCH_SIZE=128
-# VALID_STEP=10
-# REPORT_EVERY=10
+# TRAIN_FROM_STEP=10
+
+HYP1_OPTS="\
+-layers 4 -rnn_size 256 -word_vec_size 256 -heads 8 -transformer_ff 2048 \
+-tied -share_embeddings -dropout 0.1"
+HYP2_OPTS="\
+-layers 6 -rnn_size 512 -word_vec_size 512 -heads 8 -transformer_ff 2048 \
+-tied -share_embeddings -dropout 0.1"
+HYP3_OPTS="$HYP2_OPTS -label_smoothing 0.1"
+HYP4_OPTS="$HYP2_OPTS -share_decoder_embeddings"
+
+OPT1_OPTS="\
+-max_grad_norm 0 -optim adam -adam_beta1 0.9 -adam_beta2 0.998 \
+-decay_method noam -warmup_steps 8000 -learning_rate 2 \
+-param_init 0 -param_init_glorot"
 
 # update these variables
-NAME="l3up_tied"
-USER_ARGS="-num_experts 3 -tied"
 
-NAME="l3lp_tied"
-USER_ARGS="-num_experts 3 -tied -learned_prior"
-# TRAIN_FROM_STEP=10
+# ====== BASE HYP2 ====== #
+
+NAME="HYP2_base"
+USER_ARGS="-method base $HYP2_OPTS $OPT1_OPTS"
+
+# NAME="HYP2_base_oneway"
+# USER_ARGS="-method base_oneway $HYP2_OPTS $OPT1_OPTS"
+
+# ====== Latent HYP2 ====== #
+
+# NAME="HYP2_hard_lp3"
+# USER_ARGS="-method hard_lp -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
+
+# NAME="HYP2_hard_up3"
+# USER_ARGS="-method hard_up -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
+
+# NAME="HYP2_soft_lp3"
+# USER_ARGS="-method soft_lp -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
+
+# NAME="HYP2_soft_up3"
+# USER_ARGS="-method soft_up -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
+
+# ====== Latent HYP3,4 ====== #
+
+# NAME="HYP3_hard_lp3"
+# USER_ARGS="-method hard_lp -num_experts 3 $HYP3_OPTS $OPT1_OPTS"
+
+# NAME="HYP4_hard_lp3"
+# USER_ARGS="-method hard_lp -num_experts 3 $HYP4_OPTS $OPT1_OPTS"
 
 #======= EXPERIMENT SETUP ======
 
-OUT="onmt-runs/$NAME"
-
 DATA="$ONMT/data/retro_transformer_data/USPTO-50k_no_rxn"
+DATA_PREFIX="$ONMT/data/USPTO-50k_processed"
+
 TRAIN_SRC=$DATA/src-train.txt
 VALID_SRC=$DATA/src-val.txt
 TRAIN_TGT=$DATA/tgt-train.txt
@@ -47,7 +85,17 @@ VALID_TGT=$DATA/tgt-val.txt
 TEST_SRC=$DATA/src-test.txt
 TEST_TGT=$DATA/tgt-test.txt
 
-DATA_PREFIX=data/USPTO-50k_processed
+if [[ $JOBTYPE == 'demo' ]]; then
+    BATCH_SIZE=128
+    VALID_STEP=10
+    REPORT_EVERY=10
+    NAME="test_$NAME"
+    if [[ -z $STEP ]]; then
+        JOBTYPE='train'
+    else
+        JOBTYPE='test'
+    fi
+fi
 
 #====== EXPERIMENT BEGIN ======
 
@@ -59,72 +107,113 @@ for f in $TRAIN_SRC $TRAIN_TGT $VALID_SRC $VALID_TGT $TEST_SRC $TEST_TGT; do
     fi
 done
 
-if [[ -z $STEP ]]; then
+echo "Step 1: Preprocess"
+files=$(shopt -s nullglob dotglob; echo $DATA_PREFIX*)
+if (( ${#files} ))
+then
+    echo "Preprocessed *.pt files already exist. Pass."
+    echo "$files"
+else
+python $ONMT/preprocess.py \
+    -train_src $TRAIN_SRC \
+    -train_tgt $TRAIN_TGT \
+    -valid_src $VALID_SRC \
+    -valid_tgt $VALID_TGT \
+    -save_data $DATA_PREFIX \
+    -share_vocab -overwrite
+fi
+echo ""
+
+OUT="onmt-runs/$NAME"
+if [[ $JOBTYPE == 'train' ]]; then
+    echo "Step 2: Train"
     echo "Output dir = $OUT"
     [ -d $OUT ] || mkdir -p $OUT
     [ -d $OUT/models ] || mkdir $OUT/models
     [ -d $OUT/test ] || mkdir -p  $OUT/test
 
-    # echo "Step 1: Preprocess"
-    # python $ONMT/preprocess.py \
-    #     -train_src $TRAIN_SRC \
-    #     -train_tgt $TRAIN_TGT \
-    #     -valid_src $VALID_SRC \
-    #     -valid_tgt $VALID_TGT \
-    #     -save_data $DATA_PREFIX \
-    #     -share_vocab -overwrite
-
-    echo "Step 2: Train"
     GPU_OPTS=""
-    # if [[ ! -z $GPUARG ]]; then
-    #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
-    #     GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
-    # fi
-    # GPU_OPTS="-world_size 2 -gpu_ranks 0 1 -accum_count 2" # $GPUARG"
-    GPU_OPTS="-world_size 1 -gpu_ranks 0 -accum_count 4" # $GPUARG"
-    if [[ ! -z $TRAIN_FROM_STEP ]]; then
-        TRAIN_FROM_ARGS="-train_from \
-        $OUT/models/${NAME}_step_${TRAIN_FROM_STEP}.pt"
+    if [ $NGPU -eq 1 ]; then
+        GPU_OPTS="-gpu_ranks 0 -world_size 1 -accum_count 4"
+    elif [ $NGPU -eq 2 ]; then
+        GPU_OPTS="-gpu_ranks 0 1 -world_size 2 -accum_count 2"
+    elif [ $NGPU -eq 3 ]; then
+        GPU_OPTS="-gpu_ranks 0 1 2 -world_size 3 -accum_count 1"
+    elif [ $NGPU -eq 4 ]; then
+        GPU_OPTS="-gpu_ranks 0 1 2 3 -world_size 4 -accum_count 1"
     fi
+
+    TRAIN_FROM_OPTS=""
+    if [[ ! -z "$TRAIN_FROM" ]]; then
+        TRAIN_FROM_OPTS="-train_from $MODEL_PT_PREFIX\_step_$TRAIN_FROM.pt"
+    fi
+
     CMD="python $ONMT/train.py -data $DATA_PREFIX \
-        -save_model $OUT/models/$NAME $GPU_OPTS -train_steps 500000 \
+        -save_model $OUT/models/$NAME -save_dir $OUT -train_steps 500000 \
         -save_checkpoint_steps $VALID_STEP -keep_checkpoint 50 \
         -valid_step $VALID_STEP -report_every $REPORT_EVERY \
         -batch_size $BATCH_SIZE -batch_type tokens -normalization tokens \
-        -max_grad_norm 0 -optim adam -adam_beta1 0.9 -adam_beta2 0.998 \
-        -decay_method noam -warmup_steps 8000 \
-        -param_init 0  -param_init_glorot \
-        -learning_rate 2 -label_smoothing 0.0 \
-        -layers 4 -rnn_size 256 -word_vec_size 256 \
-        -heads 8 -transformer_ff 2048 \
         -encoder_type transformer -decoder_type transformer \
-        -dropout 0.1 -position_encoding -share_embeddings \
-        -global_attention general -global_attention_function softmax -self_attn_type scaled-dot $USER_ARGS $TRAIN_FROM_ARGS \
+        -global_attention general -global_attention_function softmax \
+        -self_attn_type scaled-dot -position_encoding \
+        $USER_ARGS $GPU_OPTS $TRAIN_FROM_ARGS \
         2>&1 | tee -a $OUT/train_$NAME.log"
-    echo "Training command :: $CMD"
+    echo "$CMD"
     eval "$CMD"
 fi
 
-if [[ ! -z $STEP ]]; then
+
+TRANSLATE_OUT=$OUT/test/step_${STEP}
+
+MODEL=$OUT/models/${NAME}_step_${STEP}.pt
+if [[ $N_MODELS -gt 1 ]]; then
+    echo "Step 3a: Average Models"
+    models="$MODEL"
+    MODEL="$OUT/models/${NAME}_step_${STEP}_avg${N_MODELS}.pt"
+    TRANSLATE_OUT=$OUT/test/step_${STEP}_avg${N_MODELS}
+
+    if [[ ! -f "$MODEL" ]]; then
+        step="$STEP"
+        for i in `seq 1 9`; do
+        step="$(( $STEP - $VALID_STEP * i ))"
+            models="$models $OUT/models/${NAME}_step_${step}.pt"
+        done
+
+        CMD="python average_models.py -models $models -output $MODEL"
+        echo "$CMD"
+        eval "$CMD"
+    else
+        echo "$MODEL <-- already exist. Pass."
+    fi
+    echo ""
+fi
+
+if [[ ( $JOBTYPE == 'test' ) && ( ! -z $STEP ) ]]; then
     GPU_OPTS=""
-    if [ ! -z $GPUARG ]; then
+    if [ $NGPU -gt 0 ]; then
         GPU_OPTS="-gpu 0"
     fi
-    model=$OUT/models/${NAME}_step_${STEP}.pt
-    TRANSLATE_OUT=$OUT/test/step_${STEP}
-    echo "Output dir = $TRANSLATE_OUT"
+
     [ -d $TRANSLATE_OUT ] || mkdir -p $TRANSLATE_OUT
-    
-    echo "Step 3a: Translate Test"
-    python $ONMT/translate.py -model $model \
+
+    echo "Step 3c: Evaluate Test"
+    echo "Output dir = $TRANSLATE_OUT"
+    echo ""
+    python $ONMT/translate.py -model $MODEL \
         -src $TEST_SRC -tgt $TEST_TGT \
         -output $TRANSLATE_OUT \
         -beam_size $BEAM -n_best $BEAM \
+        -num_experts $NUM_EXPERTS \
         -batch_size $TEST_BATCH_SIZE \
         -replace_unk $GPU_OPTS \
-        2>&1 | tee -a $OUT/test/test_$NAME.log
+        2>&1 | tee -a $TRANSLATE_OUT/test_$NAME.log
+    echo "Check Output dir = $TRANSLATE_OUT"
+fi
 
-    echo "Step 3b: Evaluate Test"
+if [[ ( $JOBTYPE == 'test' || $JOBTYPE == 'eval' ) && ( ! -z $STEP ) ]]; then
+    echo "Step 3c: Evaluate Test"
+    echo "Output dir = $TRANSLATE_OUT"
+    echo ""
     echo "Evaluate FWD"
     python $ONMT/evaluate.py -beam_size $BEAM \
     -output $TRANSLATE_OUT/pred.txt -target $TEST_TGT \
@@ -134,8 +223,6 @@ if [[ ! -z $STEP ]]; then
     -output $TRANSLATE_OUT/pred_cycle.txt -target $TEST_TGT \
     -log_file $TRANSLATE_OUT/pred_cycle.txt.score
     echo "Check Output dir = $TRANSLATE_OUT"
-
 fi
-#-verbose 
 
 #===== EXPERIMENT END ======
