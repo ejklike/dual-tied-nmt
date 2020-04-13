@@ -3,7 +3,7 @@ from __future__ import division
 import time
 import math
 import sys
-import torch
+import numpy as np
 
 from onmt.utils.logging import logger
 
@@ -24,7 +24,7 @@ class Statistics(object):
                  n_correct_x2y=0, n_correct_y2x=0,
                  device="cuda"):
         self.num_experts = num_experts
-        self.r = torch.zeros(num_experts, device=device) if r is None else r
+        self.r = np.zeros(num_experts) if r is None else r
         self.loss = loss
 
         self.loss_x2y = loss_x2y
@@ -34,8 +34,6 @@ class Statistics(object):
         self.n_words_y2x = n_words_y2x
         self.n_correct_x2y = n_correct_x2y
         self.n_correct_y2x = n_correct_y2x
-        self.n_src_words = 0
-        self.n_tgt_words = 0
         self.start_time = time.time()
 
     @staticmethod
@@ -79,17 +77,15 @@ class Statistics(object):
             if other_rank == our_rank:
                 continue
             for i, stat in enumerate(stats):
-                our_stats[i].update(stat, update_n_src_words=True)
+                our_stats[i].update(stat)
         return our_stats
 
-    def update(self, stat, update_n_src_words=False):
+    def update(self, stat):
         """
         Update statistics by suming values with another `Statistics` object
 
         Args:
             stat: another statistic object
-            update_n_src_words(bool): whether to update (sum) `n_src_words`
-                or not
 
         """
         assert self.num_experts == stat.num_experts, (self.num_experts,  stat.num_experts)
@@ -105,15 +101,10 @@ class Statistics(object):
         self.n_correct_x2y += stat.n_correct_x2y
         self.n_correct_y2x += stat.n_correct_y2x
 
-        if update_n_src_words:
-            self.n_src_words += stat.n_src_words
-            self.n_tgt_words += stat.n_tgt_words
-
     def dist_z(self):
         if self.r.sum() > 0:
-            r_norm = self.r.cpu().numpy()
-            r_norm /= r_norm.sum()
-            return '(' + ', '.join(['%.2f' % r for r in r_norm]) + ')'
+            r_norm = self.r / self.r.sum()
+            return 'dist: (' + ', '.join(['%.2f' % r for r in r_norm]) + '); '
         return ''
         
     def accuracy(self, side):
@@ -160,7 +151,7 @@ class Statistics(object):
         if num_steps > 0:
             step_fmt = "%s/%5d" % (step_fmt, num_steps)
         logger.info(
-            "Step %s; lr: %7.10f; dist: %s; %6.0f sec;"
+            "Step %s; lr: %7.10f; %s%6.0f sec;"
             % (step_fmt, learning_rate, self.dist_z(), 
                time.time() - start))
         logger.info(
@@ -169,7 +160,7 @@ class Statistics(object):
                (self.n_words_x2y) / (t + 1e-5)))
         logger.info(
             "[BWD] acc: %3.2f; ppl: %3.2f; xent: %3.2f; %3.0f tok/s"
-            % (self.accuracy('y2x'), self.ppl('y2x'), self.xent('y2x')
+            % (self.accuracy('y2x'), self.ppl('y2x'), self.xent('y2x'),
                (self.n_words_y2x) / (t + 1e-5)))
         sys.stdout.flush()
 
