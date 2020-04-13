@@ -144,8 +144,9 @@ if [[ $JOBTYPE == 'train' ]]; then
     fi
 
     TRAIN_FROM_OPTS=""
-    if [[ ! -z "$TRAIN_FROM" ]]; then
-        TRAIN_FROM_OPTS="-train_from $MODEL_PT_PREFIX\_step_$TRAIN_FROM.pt"
+    if [[ ! -z "$TRAIN_FROM_STEP" ]]; then
+        TRAIN_FROM_OPTS="-train_from \
+            $OUT/models/${NAME}_step_$TRAIN_FROM_STEP.pt"
     fi
 
     CMD="python $ONMT/train.py -data $DATA_PREFIX \
@@ -156,7 +157,7 @@ if [[ $JOBTYPE == 'train' ]]; then
         -encoder_type transformer -decoder_type transformer \
         -global_attention general -global_attention_function softmax \
         -self_attn_type scaled-dot -position_encoding \
-        $USER_ARGS $GPU_OPTS $TRAIN_FROM_ARGS \
+        $USER_ARGS $GPU_OPTS $TRAIN_FROM_OPTS \
         2>&1 | tee -a $OUT/train_$NAME.log"
     echo "$CMD"
     eval "$CMD"
@@ -183,7 +184,8 @@ if [[ $N_MODELS -gt 1 ]]; then
         echo "$CMD"
         eval "$CMD"
     else
-        echo "$MODEL <-- already exist. Pass."
+        echo "Averaged pt file already exists. Pass."
+        echo "(Check: $MODEL)"
     fi
     echo ""
 fi
@@ -196,7 +198,7 @@ if [[ ( $JOBTYPE == 'test' ) && ( ! -z $STEP ) ]]; then
 
     [ -d $TRANSLATE_OUT ] || mkdir -p $TRANSLATE_OUT
 
-    echo "Step 3c: Evaluate Test"
+    echo "Step 3b: Translate Test"
     echo "Output dir = $TRANSLATE_OUT"
     echo ""
     python $ONMT/translate.py -model $MODEL \
@@ -216,12 +218,14 @@ if [[ ( $JOBTYPE == 'test' || $JOBTYPE == 'eval' ) && ( ! -z $STEP ) ]]; then
     echo ""
     echo "Evaluate FWD"
     python $ONMT/evaluate.py -beam_size $BEAM \
-    -output $TRANSLATE_OUT/pred.txt -target $TEST_TGT \
-    -log_file $TRANSLATE_OUT/pred.txt.score
+        -output $TRANSLATE_OUT/pred.txt -target $TEST_TGT \
+        -log_file $TRANSLATE_OUT/pred.txt.score
+    echo ""
     echo "Evaluate FWD_CYCLE"
     python $ONMT/evaluate.py -beam_size $BEAM \
-    -output $TRANSLATE_OUT/pred_cycle.txt -target $TEST_TGT \
-    -log_file $TRANSLATE_OUT/pred_cycle.txt.score
+        -output $TRANSLATE_OUT/pred_cycle.txt -target $TEST_TGT \
+        -log_file $TRANSLATE_OUT/pred_cycle.txt.score
+    echo ""
     echo "Check Output dir = $TRANSLATE_OUT"
 fi
 
