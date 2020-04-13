@@ -32,18 +32,28 @@ class ArgumentParser(cfargparse.ArgumentParser):
         if model_opt.method == 'hard_lp':
             model_opt.learned_prior= True
             model_opt.hard_selection = True
+            model_opt.twoway = True
         elif model_opt.method == 'hard_up':
             model_opt.learned_prior= False
             model_opt.hard_selection = True
+            model_opt.twoway = True
         elif model_opt.method == 'soft_lp':
             model_opt.learned_prior= True
             model_opt.hard_selection = False
+            model_opt.twoway = True
         elif model_opt.method == 'soft_up':
             model_opt.learned_prior= False
             model_opt.hard_selection = False
+            model_opt.twoway = True
         elif model_opt.method == 'base':
             model_opt.learned_prior= False
             model_opt.hard_selection = True
+            model_opt.twoway = True
+            model_opt.num_experts = 1
+        elif model_opt.method == 'base_oneway':
+            model_opt.learned_prior= False
+            model_opt.hard_selection = True
+            model_opt.twoway = False
             model_opt.num_experts = 1
 
         if model_opt.word_vec_size > 0:
