@@ -274,8 +274,8 @@ class NMTLossCompute(LossComputeBase):
             })
         return shard_state
 
-    def compute_loss(self, output, target, reduced_sum=False, 
-                     get_stat=False, side=None):
+    def compute_loss(self, output, target, reduced_sum=True, 
+                     get_stat=True, side=None):
         seqlen, batch_size, _ = output.size()
         bottled_output = self._bottle(output)
 

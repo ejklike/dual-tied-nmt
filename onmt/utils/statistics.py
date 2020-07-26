@@ -89,7 +89,10 @@ class Statistics(object):
         """
         assert self.num_experts == stat.num_experts, (self.num_experts,  stat.num_experts)
         self.loss += stat.loss
+        # print(type(self.r.dtype), type(stat.r.dtype))
+        # logger.info(type(self.r.dtype), type(stat.r.dtype))
         if stat.r is not None:
+            # print(type(self.r.dtype), type(stat.r.dtype))
             self.r += stat.r
 
         self.loss_x2y += stat.loss_x2y

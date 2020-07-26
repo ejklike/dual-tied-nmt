@@ -283,11 +283,11 @@ class Translator(object):
             print(msg)
 
     def _gold_score(self, batch, memory_bank, src_lengths, src_vocabs,
-                    use_src_map, enc_states, batch_size, src, initial_token):
+                    use_src_map, enc_states, batch_size, src):
         if "tgt" in batch.__dict__:
             gs = self._score_target(
                 batch, memory_bank, src_lengths, src_vocabs,
-                batch.src_map if use_src_map else None, initial_token)
+                batch.src_map if use_src_map else None)
             self.model.decoder.init_state(src, memory_bank, enc_states)
         else:
             gs = [0] * batch_size
@@ -582,18 +582,9 @@ class Translator(object):
                                                        decode_strategy)
 
     def _run_encoder(self, batch):
-        src, src_lengths = batch.src if isinstance(batch.src, tuple) \
-                           else (batch.src, None)
-
+        src, src_lengths = batch.src
         enc_states, memory_bank, src_lengths = self.model.encoder(
             src, src_lengths)
-        if src_lengths is None:
-            assert not isinstance(memory_bank, tuple), \
-                'Ensemble decoding only supported for text data'
-            src_lengths = torch.Tensor(batch.batch_size) \
-                               .type_as(memory_bank) \
-                               .long() \
-                               .fill_(memory_bank.size(0))
         return src, enc_states, memory_bank, src_lengths
 
     def _decode_and_generate(
@@ -681,8 +672,6 @@ class Translator(object):
         parallel_paths = decode_strategy.parallel_paths  # beam_size
         batch_size = batch.batch_size
 
-        initial_token = self.expert_index(self.expert_id)
-
         # (1) Run the encoder on the src.
         src, enc_states, memory_bank, src_lengths = self._run_encoder(batch)
         self.model.decoder.init_state(src, memory_bank, enc_states)
@@ -694,13 +683,12 @@ class Translator(object):
             "batch": batch,
             "gold_score": self._gold_score(
                 batch, memory_bank, src_lengths, src_vocabs, use_src_map,
-                enc_states, batch_size, src, initial_token)}
+                enc_states, batch_size, src)}
 
         # (2) prep decode_strategy. Possibly repeat src objects.
         src_map = batch.src_map if use_src_map else None
         fn_map_state, memory_bank, memory_lengths, src_map = \
-            decode_strategy.initialize(memory_bank, src_lengths, src_map,
-                                       initial_token=initial_token)
+            decode_strategy.initialize(memory_bank, src_lengths, src_map)
         if fn_map_state is not None:
             self.model.decoder.map_state(fn_map_state)
         
@@ -716,10 +704,6 @@ class Translator(object):
                 src_map=src_map,
                 step=step,
                 batch_offset=decode_strategy.batch_offset)
-            if step == 0 and self.model.prior is not None:
-                lprob_z = self.model.prior(memory_bank, memory_lengths)
-                log_probs += tile(lprob_z[:, self.expert_id].unsqueeze(-1), 
-                                  self._tgt_vocab_len, dim=1)
 
             decode_strategy.advance(log_probs, attn)
             any_finished = decode_strategy.is_finished.any()
@@ -758,10 +742,9 @@ class Translator(object):
         return results
 
     def _score_target(self, batch, memory_bank, src_lengths,
-                      src_vocabs, src_map, initial_token):
+                      src_vocabs, src_map):
         tgt = batch.tgt[0]
         tgt_in = tgt[:-1]
-        tgt_in[0, :, 0] = initial_token
 
         log_probs, attn = self._decode_and_generate(
             tgt_in, memory_bank, batch, src_vocabs,

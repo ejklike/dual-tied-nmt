@@ -18,7 +18,7 @@ class NMTModel(nn.Module):
         self.decoder_x2y = decoder_x2y
         self.decoder_y2x = decoder_y2x
 
-    def forward(self, src, tgt, lengths, with_align=False, side='x2y'):
+    def forward(self, src, dec_in, lengths, with_align=False, side='x2y'):
         """Forward propagate a `src` and `tgt` pair for training.
         Possible initialized with a beginning decoder state.
 
@@ -41,7 +41,7 @@ class NMTModel(nn.Module):
             * decoder output ``(tgt_len, batch, hidden)``
             * dictionary attention dists of ``(tgt_len, batch, src_len)``
         """
-        dec_in = tgt[:-1]  # exclude last target from inputs
+        # dec_in = tgt[:-1]  # exclude last target from inputs
 
         enc_state, memory_bank, lengths = self.encoder(src, lengths)
 

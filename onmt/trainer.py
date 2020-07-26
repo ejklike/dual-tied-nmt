@@ -93,7 +93,6 @@ def build_trainer(opt, device_id, model, fields, optim, model_saver=None):
                            dropout_steps=dropout_steps,
                            source_noise=source_noise,
                            num_experts=opt.num_experts,
-                           learned_prior=opt.learned_prior,
                            twoway=opt.twoway,
                            hard_selection=opt.hard_selection,
                            tgt_field=tgt_field)
@@ -134,7 +133,7 @@ class Trainer(object):
                  report_manager=None, with_align=False, model_saver=None,
                  average_decay=0, average_every=1, model_dtype='fp32',
                  earlystopper=None, dropout=[0.3], dropout_steps=[0],
-                 source_noise=None, num_experts=1, learned_prior=False, 
+                 source_noise=None, num_experts=1, 
                  hard_selection=False, twoway=True, tgt_field=None):
         # Basic attributes.
         self.model = model
@@ -163,13 +162,9 @@ class Trainer(object):
         self.source_noise = source_noise
         
         self.num_experts = num_experts
-        self.learned_prior = learned_prior
         self.hard_selection = hard_selection
         self.twoway = twoway
         self.tgt_field = tgt_field
-        
-        self.get_loss_stats = (self._get_loss if self.num_experts > 1 else 
-                               self._get_loss_with_no_expert)
 
         for i in range(len(self.accum_count_l)):
             assert self.accum_count_l[i] > 0
@@ -353,8 +348,8 @@ class Trainer(object):
             stats = onmt.utils.Statistics(self.num_experts)
 
             for batch in valid_iter:
-                valid_loss, valid_stats = \
-                    self.get_loss_stats(batch, validation=True)
+                valid_loss, valid_stats = self.get_loss_stats(
+                    batch, validation=True)
                 stats.update(valid_stats)
 
         if moving_average:
@@ -378,162 +373,90 @@ class Trainer(object):
                .reshape(1, self.num_experts)).float() # B x K
         return one_hot_winners
 
-    def get_dec_in(self, dec_in, winners):
-        dec_in_ = dec_in.clone()
-        if self.num_experts > 1 and winners is not None:
-            dec_in_[0, :, 0] = self.expert_index(winners)
-        return dec_in_
+    def insert_latent_token(self, seq, winners):
+        latent = seq[:1]
+        latent[0, :, 0] = self.expert_index(winners)
+        return torch.cat([seq[:1], latent, seq[1:]], dim=0) 
 
-    def _get_loss(self, batch, validation=False):
+    def get_winner(self, batch, validation=False):
         src, src_lengths = batch.src
         tgt, tgt_lengths = batch.tgt
 
         k = self.num_experts
         bsz = src_lengths.size(0)
 
-        def _get_lprob_y(dec_out, target, side=None, get_stat=False):
-            if get_stat: assert side is not None
-            loss, stat_dict = self.train_loss.compute_loss(
-                dec_out, target, reduced_sum=False, 
-                get_stat=get_stat, side=side)
-            loss = loss.view(bsz, -1)
-            lprob = -loss.sum(dim=1, keepdim=True) # -> B x 1
-            if get_stat:
-                return lprob, stat_dict
-            return lprob
-                
+        if validation:
+            dec_out_for_winner, _ = self.model(src, tgt[:1], src_lengths)
+            winner_probs = self.model.generator(dec_out_for_winner)
+            winner_probs = winner_probs[0, :, -self.num_experts:] # B x K
+            winners = torch.argmax(winner_probs, dim=1)
 
-        def get_lprob(winners=None, side='x2y'):
-            x, xlen, y, decoder = {
-                'x2y': (src, src_lengths, tgt, self.model.decoder_x2y),
-                'y2x': (tgt, tgt_lengths, src, self.model.decoder_y2x)
-            }[side]
-            
-            enc, mem, _ = self.model.encoder(x, xlen)
-            input_, target = y[:-1], y[1:]
-
-            if winners is None:
-                lprob_y = []
-                for i in range(k):
-                    decoder.init_state(x, enc, mem)
-                    dec_in = self.get_dec_in(input_, i)
-                    assert not dec_in.requires_grad
-                    dec_out, _ = decoder(dec_in, mem, 
-                        memory_lengths=xlen, with_align=self.with_align)
-                    lprob_y.append(_get_lprob_y(dec_out, target))
-                lprob_y = torch.cat(lprob_y, dim=1)  # -> B x K
-            else:
-                decoder.init_state(x, enc, mem)
-                dec_in = self.get_dec_in(input_, winners)
-                dec_out, _ = decoder(dec_in, mem, 
-                    memory_lengths=xlen, with_align=self.with_align)
-                lprob_y, stat_dict = _get_lprob_y(
-                    dec_out, target, get_stat=True, side=side)  # -> B
-            
-            lprob_z = None
-            if self.learned_prior and side == 'x2y':
-                lprob_z = self.model.prior(mem, xlen)  # B x K
-                if winners is not None:
-                    lprob_z = lprob_z.gather(
-                        dim=1, index=winners.unsqueeze(-1))
-                lprob_z = lprob_z.type_as(lprob_y)  # B x K
-
-            if winners is None:
-                return lprob_y, lprob_z
-            else:
-                return lprob_y, lprob_z, stat_dict
-
-        # compute responsibilities
-        self.model.eval()
-        with torch.no_grad():  # disable autograd
-            lprob_y, lprob_z = get_lprob(side='x2y') # B x K
-            lprob_x, _ = get_lprob(side='y2x') # B x K
-            lprob_xyz = lprob_x + lprob_y
-            if lprob_z is not None:
-                lprob_xyz += lprob_z
-            prob_xyz = torch.nn.functional.softmax(lprob_xyz, dim=1)
-        self.model.train()
-        assert not prob_xyz.requires_grad
-
-        # compute loss with dropout
-        if self.hard_selection or validation:
-            winners = prob_xyz.max(dim=1)[1]
-            lprob_y, lprob_z, stat_dict_x2y = \
-                get_lprob(winners, side='x2y') # B
-            lprob_x, _, stat_dict_y2x = \
-                get_lprob(winners, side='y2x') # B
-            loss = -(lprob_x + lprob_y)
-            if lprob_z is not None:
-                loss -= lprob_z
-            rz = self.get_one_hot_winners(winners)
         else:
-            lprob_y, lprob_z = get_lprob(side='x2y') # B x K
-            lprob_x, _, = get_lprob(side='y2x') # B x K
-            lprob = lprob_x + lprob_y
-            if lprob_z is not None:
-                lprob += lprob_z
+            self.model.eval()
+            with torch.no_grad():  # disable autograd
+                loss_all = []
 
-            # compute loss
-            loss = - (prob_xyz * lprob).sum(dim=1)
-            rz = prob_xyz.sum(dim=0)
-            stat_dict_x2y = {
-                'loss_x2y': -lprob_y.sum().item(),
-                'n_words_x2y': (tgt_lengths-1).sum().item()}
-            stat_dict_y2x = {
-                'loss_y2x': -lprob_x.sum().item(),
-                'n_words_y2x': (src_lengths-1).sum().item()}
+                # x2y encoding and decoder init
+                src_enc, src_mem, _ = self.model.encoder(src, src_lengths)
+                self.model.decoder_x2y.init_state(src, src_mem, src_enc)
 
-        loss = loss.sum()
-        stats = onmt.utils.Statistics(self.num_experts, 
-                                      loss=loss.item(),
-                                      r=rz.sum(dim=0),
-                                      **stat_dict_x2y,
-                                      **stat_dict_y2x)
-        return loss, stats
+                for i in range(k):
+                    tgt_i = self.insert_latent_token(tgt, i)
 
-    def _get_loss_with_no_expert(self, batch, validation=False):
+                    dec_out, _ = self.model.decoder_x2y(
+                        tgt_i[:-1], src_mem, memory_lengths=src_lengths)
+                    loss_x2y, _ = self.train_loss.compute_loss(
+                        dec_out, tgt_i[1:], reduced_sum=False, side='x2y')
+                    loss_x2y = loss_x2y.view(bsz, -1)
+                    loss_x2y = loss_x2y.sum(dim=1, keepdim=True) # -> B x 1
+                    
+                    # y2x
+                    dec_out, _ = self.model(
+                        tgt_i, src[:-1], tgt_lengths+1, side='y2x')
+                    loss_y2x, _ = self.train_loss.compute_loss(
+                        dec_out, src[1:], reduced_sum=False, side='y2x')
+                    loss_y2x = loss_y2x.view(bsz, -1)
+                    loss_y2x = loss_y2x.sum(dim=1, keepdim=True) # -> B x 1
+
+                    loss_all.append(loss_x2y + loss_y2x)
+                loss_all = torch.cat(loss_all, dim=1)  # -> B x K
+                winners = loss_all.min(dim=1)[1]
+            self.model.train()
+            assert not winners.requires_grad
+
+        return winners
+
+    def get_loss_stats(self, batch, validation=False):
         src, src_lengths = batch.src
         tgt, tgt_lengths = batch.tgt
 
-        bsz = src_lengths.size(0)
+        winners = rz = None
+        if self.num_experts > 1:
+            winners = self.get_winner(batch, validation=validation)
+            rz = self.get_one_hot_winners(winners).sum(dim=0).cpu().numpy()
 
-        def _get_lprob_y(dec_out, target, side=None):
-            loss, stat_dict = self.train_loss.compute_loss(
-                dec_out, target, reduced_sum=True, get_stat=True, side=side)
-            lprob = -loss
-            return lprob, stat_dict
-            
-        def get_lprob(side='x2y'):
-            x, xlen, y, decoder = {
-                'x2y': (src, src_lengths, tgt, self.model.decoder_x2y),
-                'y2x': (tgt, tgt_lengths, src, self.model.decoder_y2x)
-            }[side]
-            
-            enc, mem, _ = self.model.encoder(x, xlen)
-            input_, target = y[:-1], y[1:]
+            tgt = self.insert_latent_token(tgt, winners)
+            tgt_lengths += 1
 
-            decoder.init_state(x, enc, mem)
-            dec_in = self.get_dec_in(input_)
-            dec_out, _ = decoder(dec_in, mem, 
-                memory_lengths=xlen, with_align=self.with_align)
-            lprob_y, stat_dict = _get_lprob_y(dec_out, target, side=side)
+        dec_out, attn_x2y = self.model(src, tgt[:-1], src_lengths, side='x2y')
+        loss_x2y, stat_dict_x2y = self.train_loss.compute_loss(
+            dec_out, tgt[1:], side='x2y')
+        
+        # y2x encoding
+        dec_out, attn_y2x = self.model(tgt, src[:-1], tgt_lengths, side='y2x')
+        loss_y2x, stat_dict_y2x = self.train_loss.compute_loss(
+            dec_out, src[1:], side='y2x')
 
-            return lprob_y, stat_dict
-
-        lprob_y, stat_dict_x2y = get_lprob(side='x2y') # B x K
-        loss = -lprob_y
-
-        stat_dict_y2x = {}
-        if self.twoway:
-            lprob_x, stat_dict_y2x = get_lprob(side='y2x') # B x K
-            loss += -lprob_x
-
+        loss = loss_x2y + loss_y2x
+        ########### if self.model.train and self.mirrored_attn:
+        ########### loss += mirrored_loss....
         stats = onmt.utils.Statistics(self.num_experts, 
                                       loss=loss.item(),
+                                      r=rz,
                                       **stat_dict_x2y,
                                       **stat_dict_y2x)
         return loss, stats
-    
+
     def _gradient_accumulation(self, true_batches, normalization_x2y, 
                                normalization_y2x, total_stats, report_stats):
         if self.accum_count > 1:

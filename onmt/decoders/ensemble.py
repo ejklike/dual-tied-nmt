@@ -145,11 +145,6 @@ class EnsembleModel(NMTModel):
         super(EnsembleModel, self).__init__(encoder, decoder_x2y, decoder_y2x)
         self.generator = EnsembleGenerator(
             [model.generator for model in models], raw_probs)
-        
-        self.prior = None
-        if models[0].prior is not None:
-            self.prior = EnsembleClassifier(    
-                [model.prior for model in models], raw_probs)
 
         self.models = nn.ModuleList(models)
 

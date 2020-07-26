@@ -39,7 +39,9 @@ def main(opt):
 
     with open(opt.outputs, 'r') as f:
         for i, line in enumerate(f.readlines()):
-            outputs[i % opt.beam_size].append(''.join(line.strip().split(' ')))
+            tokens = line.strip().split(' ')
+            if '<expert_' in tokens[0]: tokens = tokens[1:]
+            outputs[i % opt.beam_size].append(''.join(tokens))
     
     for i, preds in enumerate(outputs):
         test_df['pred_{}'.format(i + 1)] = preds

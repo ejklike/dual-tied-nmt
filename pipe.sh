@@ -14,21 +14,21 @@ INHOUSE=$4
 
 #======= EXPERIMENT INPUT ======
 BEAM=10
-TEST_BATCH_SIZE=256
+TEST_BATCH_SIZE=384
 N_MODELS=1
 
 BATCH_SIZE=4096
-VALID_STEP=10000
+VALID_STEP=1000
 REPORT_EVERY=1000
 
-# TRAIN_FROM_STEP=10
+# TRAIN_FROM_STEP=3000
 
-HYP1_OPTS="\
--layers 4 -rnn_size 256 -word_vec_size 256 -heads 8 -transformer_ff 2048 \
--tied -share_embeddings -dropout 0.1"
-HYP2_OPTS="\
--layers 6 -rnn_size 512 -word_vec_size 512 -heads 8 -transformer_ff 2048 \
--tied -share_embeddings -dropout 0.1"
+HYP_OPTS="\
+-layers 6 -rnn_size 256 -word_vec_size 256 -heads 8 -transformer_ff 2048 \
+-share_embeddings -dropout 0.3 -max_relative_positions 4"
+# HYP2_OPTS="\
+# -layers 6 -rnn_size 512 -word_vec_size 512 -heads 8 -transformer_ff 2048 \
+# -tied -share_embeddings -dropout 0.1"
 HYP3_OPTS="$HYP2_OPTS -label_smoothing 0.1"
 HYP4_OPTS="$HYP2_OPTS -share_decoder_embeddings"
 
@@ -41,33 +41,8 @@ OPT1_OPTS="\
 
 # ====== BASE HYP2 ====== #
 
-NAME="HYP2_base"
-USER_ARGS="-method base $HYP2_OPTS $OPT1_OPTS"
-
-# NAME="HYP2_base_oneway"
-# USER_ARGS="-method base_oneway $HYP2_OPTS $OPT1_OPTS"
-
-# ====== Latent HYP2 ====== #
-
-# NAME="HYP2_hard_lp3"
-# USER_ARGS="-method hard_lp -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
-
-# NAME="HYP2_hard_up3"
-# USER_ARGS="-method hard_up -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
-
-# NAME="HYP2_soft_lp3"
-# USER_ARGS="-method soft_lp -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
-
-# NAME="HYP2_soft_up3"
-# USER_ARGS="-method soft_up -num_experts 3 $HYP2_OPTS $OPT1_OPTS"
-
-# ====== Latent HYP3,4 ====== #
-
-# NAME="HYP3_hard_lp3"
-# USER_ARGS="-method hard_lp -num_experts 3 $HYP3_OPTS $OPT1_OPTS"
-
-# NAME="HYP4_hard_lp3"
-# USER_ARGS="-method hard_lp -num_experts 3 $HYP4_OPTS $OPT1_OPTS"
+NAME="HYP_OPTS_l3"
+USER_ARGS="-method oneway_latent -num_experts 3 $HYP_OPTS $OPT1_OPTS"
 
 #======= EXPERIMENT SETUP ======
 
@@ -164,6 +139,9 @@ if [[ $JOBTYPE == 'train' ]]; then
 fi
 
 
+STEP=3000
+NUM_EXPERTS=3
+
 TRANSLATE_OUT=$OUT/test/step_${STEP}
 
 MODEL=$OUT/models/${NAME}_step_${STEP}.pt
@@ -189,6 +167,7 @@ if [[ $N_MODELS -gt 1 ]]; then
     fi
     echo ""
 fi
+
 
 if [[ ( $JOBTYPE == 'test' ) && ( ! -z $STEP ) ]]; then
     GPU_OPTS=""
@@ -218,13 +197,13 @@ if [[ ( $JOBTYPE == 'test' || $JOBTYPE == 'eval' ) && ( ! -z $STEP ) ]]; then
     echo ""
     echo "Evaluate FWD"
     python $ONMT/evaluate.py -beam_size $BEAM \
-        -output $TRANSLATE_OUT/pred.txt -target $TEST_TGT \
-        -log_file $TRANSLATE_OUT/pred.txt.score
+        -output $TRANSLATE_OUT/fwd_out_can.txt -target $TEST_TGT \
+        -log_file $TRANSLATE_OUT/fwd_out_can.txt.score
     echo ""
     echo "Evaluate FWD_CYCLE"
     python $ONMT/evaluate.py -beam_size $BEAM \
-        -output $TRANSLATE_OUT/pred_cycle.txt -target $TEST_TGT \
-        -log_file $TRANSLATE_OUT/pred_cycle.txt.score
+        -output $TRANSLATE_OUT/pred.txt -target $TEST_TGT \
+        -log_file $TRANSLATE_OUT/pred.txt.score
     echo ""
     echo "Check Output dir = $TRANSLATE_OUT"
 fi

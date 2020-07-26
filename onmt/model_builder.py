@@ -167,27 +167,28 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         for enc, dec1, dec2 in zip(encoder.transformer, 
                                    decoder_x2y.transformer_layers, 
                                    decoder_y2x.transformer_layers):
-            dec1.self_attn.linear_keys.weight = \
-                enc.self_attn.linear_keys.weight
-            dec1.self_attn.linear_values.weight = \
-                enc.self_attn.linear_values.weight
-            dec1.self_attn.linear_query.weight = \
-                enc.self_attn.linear_query.weight
-            dec1.self_attn.final_linear.weight = \
-                enc.self_attn.final_linear.weight
-            dec1.feed_forward.w_1.weight = enc.feed_forward.w_1.weight
-            dec1.feed_forward.w_2.weight = enc.feed_forward.w_2.weight
+            dec1.self_attn.linear_keys = enc.self_attn.linear_keys
+            dec1.self_attn.linear_values = enc.self_attn.linear_values
+            dec1.self_attn.linear_query = enc.self_attn.linear_query
+            dec1.self_attn.final_linear = enc.self_attn.final_linear
 
-            dec2.self_attn.linear_keys.weight = \
-                enc.self_attn.linear_keys.weight
-            dec2.self_attn.linear_values.weight = \
-                enc.self_attn.linear_values.weight
-            dec2.self_attn.linear_query.weight = \
-                enc.self_attn.linear_query.weight
-            dec2.self_attn.final_linear.weight = \
-                enc.self_attn.final_linear.weight
-            dec2.feed_forward.w_1.weight = enc.feed_forward.w_1.weight
-            dec2.feed_forward.w_2.weight = enc.feed_forward.w_2.weight
+            dec2.self_attn.linear_keys = enc.self_attn.linear_keys
+            dec2.self_attn.linear_values = enc.self_attn.linear_values
+            dec2.self_attn.linear_query = enc.self_attn.linear_query
+            dec2.self_attn.final_linear = enc.self_attn.final_linear
+
+            if model_opt.max_relative_positions > 0:
+                dec1.self_attn.relative_positions_embeddings = \
+                    dec2.self_attn.relative_positions_embeddings = \
+                    enc.self_attn.relative_positions_embeddings
+
+            dec2.context_attn.linear_keys = dec1.context_attn.linear_keys
+            dec2.context_attn.linear_values = dec1.context_attn.linear_values
+            dec2.context_attn.linear_query = dec1.context_attn.linear_query
+            dec2.context_attn.final_linear = dec1.context_attn.final_linear
+
+            # dec2.feed_forward.w_1 = dec1.feed_forward.w_1
+            # dec2.feed_forward.w_2 = dec1.feed_forward.w_2
 
     # Build NMTModel(= encoder + decoder).
     if gpu and gpu_id is not None:
@@ -220,14 +221,6 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
         if model_opt.share_decoder_embeddings:
             generator.linear.weight = decoder.embeddings.word_lut.weight
 
-    # Build prior modeling
-    prior = None
-    if model_opt.learned_prior:
-        prior = onmt.models.Classifier(
-            model_opt.enc_rnn_size, model_opt.num_experts, 
-            dropout=(model_opt.dropout[0] if type(model_opt.dropout) is list
-                     else model_opt.dropout))
-
     # Load the model states from checkpoint or initialize them.
     if checkpoint is not None:
         # This preserves backward-compat for models using customed layernorm
@@ -244,8 +237,6 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
 
         model.load_state_dict(checkpoint['model'], strict=False)
         generator.load_state_dict(checkpoint['generator'], strict=False)
-        if model_opt.learned_prior:
-            prior.load_state_dict(checkpoint['prior'], strict=False)
     else:
         if model_opt.param_init != 0.0:
             def init_param(target_model):
@@ -254,8 +245,6 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
                                     model_opt.param_init)
             init_param(model)
             init_param(generator)
-            if model_opt.learned_prior:
-                init_param(prior)
         if model_opt.param_init_glorot:
             def init_glorot(target_model):
                 for p in target_model.parameters():
@@ -263,8 +252,6 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
                         xavier_uniform_(p)
             init_glorot(model)
             init_glorot(generator)
-            if model_opt.learned_prior:
-                init_glorot(prior)
 
         if hasattr(model.encoder, 'embeddings'):
             model.encoder.embeddings.load_pretrained_vectors(
@@ -277,7 +264,6 @@ def build_base_model(model_opt, fields, gpu, checkpoint=None, gpu_id=None):
                 model_opt.pre_word_vecs_dec)
 
     model.generator = generator
-    model.prior = prior
     model.to(device)
     if model_opt.model_dtype == 'fp16' and model_opt.optim == 'fusedadam':
         model.half()
